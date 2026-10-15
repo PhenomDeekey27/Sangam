@@ -1,0 +1,246 @@
+import type { Server, Socket } from "socket.io";
+import type { RoomManager } from "../rooms/room-manager.js";
+import type { RoomParticipant } from "../rooms/room-types.js";
+import { ErrorCodes, errorFor } from "../utils/errors.js";
+import type {
+  ClientToServerEvents,
+  RoomOpAck,
+  ServerToClientEvents,
+} from "./contract.js";
+import {
+  parseInterimPayload,
+  parseJoinPayload,
+  parseLeavePayload,
+  parseUtterancePayload,
+} from "./event-validation.js";
+
+type AppServer = Server<ClientToServerEvents, ServerToClientEvents>;
+type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
+type Ack = ((response: RoomOpAck) => void) | undefined;
+
+/** Socket.IO room-channel name for a Sangam room code. */
+export function channelFor(code: string): string {
+  return `room:${code}`;
+}
+
+/** Wire shape of a participant; only server-known fields are exposed. */
+function toProfile(participant: RoomParticipant) {
+  return {
+    id: participant.id,
+    side: participant.side,
+    status: "connected" as const,
+    displayName: participant.displayName,
+    language: participant.language,
+  };
+}
+
+function replyAck(ack: Ack, response: RoomOpAck): void {
+  ack?.(response);
+}
+
+/**
+ * Finish a successful create/join: bind the socket to the room channel, send
+ * the joiner a full snapshot, tell existing members about the arrival (unless
+ * this was an idempotent re-join), and ack. Identity (id, side) always comes
+ * from the server-side room record.
+ */
+function confirmJoin(
+  io: AppServer,
+  socket: AppSocket,
+  rooms: RoomManager,
+  result: Extract<ReturnType<RoomManager["joinRoom"]>, { ok: true }>,
+  ack: Ack,
+  announce: boolean,
+): void {
+  const { room, participant } = result;
+  socket.join(channelFor(room.code));
+  socket.emit("room:state", rooms.snapshot(room));
+  if (announce) {
+    socket
+      .to(channelFor(room.code))
+      .emit("room:participant_joined", { participant: toProfile(participant) });
+  }
+  replyAck(ack, {
+    ok: true,
+    self: { id: participant.id, side: participant.side },
+  });
+}
+
+/** Detach a socket from its current room and notify remaining members. */
+function removeMembership(
+  io: AppServer,
+  socket: AppSocket,
+  rooms: RoomManager,
+): void {
+  const departure = rooms.removeBySocket(socket.id);
+  if (!departure) return;
+  socket.leave(channelFor(departure.code));
+  socket.to(channelFor(departure.code)).emit("room:participant_left", {
+    participantId: departure.participant.id,
+  });
+}
+
+/**
+ * If the socket already belongs to a different room, depart it first so the
+ * old room's members learn about the leave and the socket.io channel is
+ * dropped before the new membership exists.
+ */
+function leavePreviousRoom(
+  io: AppServer,
+  socket: AppSocket,
+  rooms: RoomManager,
+  nextCode: string,
+): void {
+  const previous = rooms.membershipOf(socket.id);
+  if (previous && previous.code !== nextCode) {
+    removeMembership(io, socket, rooms);
+  }
+}
+
+/**
+ * Register every room and conversation listener for one connection. Handlers
+ * derive identity exclusively from server membership — nothing a client
+ * sends can choose a side or impersonate another participant.
+ */
+export function registerRoomHandlers(
+  io: AppServer,
+  socket: AppSocket,
+  rooms: RoomManager,
+): void {
+  socket.on("room:create", (payload, ack) => {
+    const parsed = parseJoinPayload(payload);
+    if (!parsed.ok) {
+      replyAck(ack, { ok: false, error: parsed.error });
+      return;
+    }
+    const previous = rooms.membershipOf(socket.id);
+    leavePreviousRoom(io, socket, rooms, parsed.value.code);
+    const result = rooms.createAndJoin(parsed.value.code, {
+      socketId: socket.id,
+      language: parsed.value.language,
+      displayName: parsed.value.displayName ?? "",
+    });
+    if (!result.ok) {
+      replyAck(ack, { ok: false, error: result.error });
+      return;
+    }
+    const announce = previous?.code !== result.room.code;
+    confirmJoin(io, socket, rooms, result, ack, announce);
+  });
+
+  socket.on("room:join", (payload, ack) => {
+    const parsed = parseJoinPayload(payload);
+    if (!parsed.ok) {
+      replyAck(ack, { ok: false, error: parsed.error });
+      return;
+    }
+    const previous = rooms.membershipOf(socket.id);
+    leavePreviousRoom(io, socket, rooms, parsed.value.code);
+    const result = rooms.joinRoom(parsed.value.code, {
+      socketId: socket.id,
+      language: parsed.value.language,
+      displayName: parsed.value.displayName ?? "",
+    });
+    if (!result.ok) {
+      replyAck(ack, { ok: false, error: result.error });
+      return;
+    }
+    const announce = previous?.code !== result.room.code;
+    confirmJoin(io, socket, rooms, result, ack, announce);
+  });
+
+  socket.on("room:leave", (payload) => {
+    const membership = rooms.membershipOf(socket.id);
+    if (!membership) return;
+    const parsed = parseLeavePayload(payload, membership.code);
+    if (!parsed.ok) {
+      socket.emit("error", parsed.error);
+      return;
+    }
+    removeMembership(io, socket, rooms);
+  });
+
+  socket.on("conversation:utterance", (payload) => {
+    const membership = rooms.membershipOf(socket.id);
+    if (!membership) {
+      socket.emit("error", errorFor(ErrorCodes.NOT_IN_ROOM));
+      return;
+    }
+    const parsed = parseUtterancePayload(payload);
+    if (!parsed.ok) {
+      socket.emit("error", parsed.error);
+      return;
+    }
+    const room = rooms.roomOf(socket.id);
+    const participant = rooms.participantOf(socket.id);
+    /* c8 ignore next -- membership without participant would be corrupted */
+    if (!room || !participant) return;
+    const { utteranceId } = parsed.value;
+    if (room.usedUtteranceIds.has(utteranceId)) {
+      // A re-played id would create a phantom duplicate on clients.
+      socket.emit("error", errorFor(ErrorCodes.INVALID_PAYLOAD));
+      return;
+    }
+    room.usedUtteranceIds.add(utteranceId);
+    room.utteranceSeq += 1;
+    const entry = {
+      utterance: {
+        id: utteranceId,
+        speakerSide: participant.side,
+        language: parsed.value.language,
+        text: parsed.value.text,
+        finalizedAt: Date.now(),
+        sequence: room.utteranceSeq,
+      },
+      translation: { status: "unavailable" as const },
+    };
+    io.to(channelFor(membership.code)).emit("conversation:utterance", {
+      entry,
+    });
+  });
+
+  socket.on("conversation:interim", (payload) => {
+    const membership = rooms.membershipOf(socket.id);
+    if (!membership) {
+      socket.emit("error", errorFor(ErrorCodes.NOT_IN_ROOM));
+      return;
+    }
+    const parsed = parseInterimPayload(payload);
+    if (!parsed.ok) {
+      socket.emit("error", parsed.error);
+      return;
+    }
+    const participant = rooms.participantOf(socket.id);
+    /* c8 ignore next -- membership without participant would be corrupted */
+    if (!participant) return;
+    // The sender renders its own interim locally; only the partner needs it.
+    socket.to(channelFor(membership.code)).emit("conversation:interim", {
+      side: participant.side,
+      text: parsed.value.text,
+      language: parsed.value.language,
+    });
+  });
+
+  socket.on("conversation:interrupt", () => {
+    const membership = rooms.membershipOf(socket.id);
+    if (!membership) {
+      socket.emit("error", errorFor(ErrorCodes.NOT_IN_ROOM));
+      return;
+    }
+    const participant = rooms.participantOf(socket.id);
+    /* c8 ignore next -- membership without participant would be corrupted */
+    if (!participant) return;
+    socket
+      .to(channelFor(membership.code))
+      .emit("conversation:interrupt", { side: participant.side });
+  });
+}
+
+/** Disconnect handling: release membership and announce the departure. */
+export function handleDisconnect(
+  io: AppServer,
+  socket: AppSocket,
+  rooms: RoomManager,
+): void {
+  removeMembership(io, socket, rooms);
+}
