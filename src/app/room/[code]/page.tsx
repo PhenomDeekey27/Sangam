@@ -2,27 +2,13 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { RoomView } from "@/features/room/components/room-view";
+import { readLanguagePreferences } from "@/features/room/utils/language-preference";
 import { isRoomCode, normalizeRoomCode } from "@/features/room/utils/room-code";
-import {
-  DEFAULT_HEARD_LANGUAGE,
-  DEFAULT_SPOKEN_LANGUAGE,
-  findLanguage,
-} from "@/features/translation/data/languages";
 import type { RoomMode } from "@/features/room/types";
-import type { LanguageCode } from "@/types";
 
 export const metadata: Metadata = {
   title: "Room",
 };
-
-/** Accept only codes Sangam actually offers; otherwise use the default. */
-function pickLanguage(
-  value: string | string[] | undefined,
-  fallback: LanguageCode,
-): LanguageCode {
-  const candidate = Array.isArray(value) ? value[0] : value;
-  return candidate && findLanguage(candidate) ? candidate : fallback;
-}
 
 /**
  * `?create=1` marks the creator's own navigation: that screen reserves the
@@ -37,6 +23,11 @@ function pickMode(value: string | string[] | undefined): RoomMode {
  * URL data (`params`, `searchParams`) must be read inside a `<Suspense>`
  * boundary, so the route keeps a shared static app shell and only the room
  * itself streams in once the code and language preferences are known.
+ *
+ * Both language preferences are read here — `speak` (this participant's own
+ * language) and `hear` (what they want to hear) — and validated against the
+ * supported list. A supported selection is always preserved; defaults apply
+ * only when the parameter is missing or invalid.
  */
 export default function RoomPage({
   params,
@@ -65,8 +56,7 @@ async function RoomContent({
     <RoomView
       code={normalizeRoomCode(code)}
       mode={pickMode(query.create)}
-      youLanguage={pickLanguage(query.speak, DEFAULT_SPOKEN_LANGUAGE)}
-      partnerLanguage={pickLanguage(query.hear, DEFAULT_HEARD_LANGUAGE)}
+      preferences={readLanguagePreferences(query)}
     />
   );
 }

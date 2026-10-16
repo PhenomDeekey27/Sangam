@@ -14,6 +14,21 @@ export interface SeatAssignment {
   readonly partner: ParticipantProfile | null;
 }
 
+/**
+ * Seats from a server snapshot: our own participant record by the id the
+ * server assigned us, and whoever else is in the room as the partner.
+ */
+export function seatsFromSnapshot(
+  participants: readonly ParticipantProfile[],
+  selfId: string,
+): SeatAssignment {
+  return {
+    you: participants.find((participant) => participant.id === selfId) ?? null,
+    partner:
+      participants.find((participant) => participant.id !== selfId) ?? null,
+  };
+}
+
 /** Seat of a given side, or `null` when that seat is empty. */
 export function seatFor(
   seats: SeatAssignment,

@@ -8,4 +8,7 @@ export type {
   RoomOpAck,
   ServerToClientEvents,
   SocketError,
+  SpeechCapabilities,
+  SpeechProviderId,
+  SpeechStartAck,
 } from "../../../src/types/socket.js";

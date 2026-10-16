@@ -2,8 +2,14 @@ import { createServer, type Server as HttpServer } from "node:http";
 import cors from "cors";
 import express from "express";
 import { Server as SocketIOServer } from "socket.io";
-import { loadEnv, type ServerEnv } from "./config/env.js";
+import {
+  loadEnv,
+  resolveSpeechEnv,
+  type ServerEnv,
+  type SpeechEnv,
+} from "./config/env.js";
 import { RoomManager } from "./rooms/room-manager.js";
+import { SpeechSessions } from "./speech/speech-sessions.js";
 import type {
   ClientToServerEvents,
   ServerToClientEvents,
@@ -18,6 +24,10 @@ export interface SangamServer {
   readonly httpServer: HttpServer;
   readonly io: SocketIOServer<ClientToServerEvents, ServerToClientEvents>;
   readonly rooms: RoomManager;
+  /** Server-side speech pipeline; reports its provider capabilities. */
+  readonly speech: SpeechSessions;
+  /** Validated speech configuration (credentials stay server-side). */
+  readonly speechEnv: SpeechEnv;
   /** Start listening on the configured port. Rejects on bind failure. */
   listen(): Promise<void>;
   /** Stop accepting connections, close sockets, and clear timers. */
@@ -32,6 +42,7 @@ export interface SangamServer {
  */
 export function createSangamServer(env: ServerEnv = loadEnv()): SangamServer {
   const rooms = new RoomManager();
+  const speechEnv = resolveSpeechEnv(env.speech);
 
   const app = express();
   app.disable("x-powered-by");
@@ -52,7 +63,8 @@ export function createSangamServer(env: ServerEnv = loadEnv()): SangamServer {
        */
     },
   );
-  registerSocketHandlers(io, rooms);
+  const speech = new SpeechSessions(io, rooms, speechEnv);
+  registerSocketHandlers(io, rooms, speech);
 
   const sweeper = setInterval(() => {
     rooms.sweepEmptyRooms();
@@ -64,6 +76,8 @@ export function createSangamServer(env: ServerEnv = loadEnv()): SangamServer {
     httpServer,
     io,
     rooms,
+    speech,
+    speechEnv,
     listen: () =>
       new Promise<void>((resolve, reject) => {
         const onError = (error: Error) => reject(error);

@@ -22,10 +22,41 @@ export const MAX_TEXT_LENGTH = 1000;
 /** Ceiling for a display name sent on join. */
 export const MAX_DISPLAY_NAME_LENGTH = 24;
 
-/** Ceiling for a language tag sent on join or with an utterance. */
-const MAX_LANGUAGE_LENGTH = 16;
+/**
+ * Languages Sangam offers selectors for. Codes are BCP-47 primary subtags and
+ * mirror `src/features/translation/data/languages.ts`; the server keeps its own
+ * copy so it stays deployable on its own sources, and
+ * `room-validation.test.ts` fails if the two drift apart.
+ */
+export const SUPPORTED_LANGUAGE_CODES = [
+  "en",
+  "hi",
+  "ta",
+  "te",
+  "bn",
+  "mr",
+  "kn",
+  "ml",
+  "gu",
+  "pa",
+  "es",
+  "fr",
+  "de",
+  "pt",
+  "ar",
+  "ja",
+  "ko",
+  "zh",
+] as const;
 
-const LANGUAGE_PATTERN = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+export type SupportedLanguage = (typeof SUPPORTED_LANGUAGE_CODES)[number];
+
+/**
+ * Fallback speaking/listening preference used only when a payload supplies no
+ * valid language at all — a valid selection is never replaced.
+ */
+export const DEFAULT_SPEAKING_LANGUAGE: SupportedLanguage = "en";
+export const DEFAULT_LISTENING_LANGUAGE: SupportedLanguage = "en";
 
 /** Trim and uppercase a code pasted from a URL or shared by chat. */
 export function normalizeRoomCode(value: string): string {
@@ -42,12 +73,22 @@ export function isRoomCode(value: unknown): value is string {
   );
 }
 
-/** Narrow a raw value to an acceptable language tag. */
-export function isLanguageCode(value: unknown): value is string {
+/** Trim and lower-case a language tag (BCP-47 tags are case-insensitive). */
+export function normalizeLanguage(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/**
+ * Narrow a raw value to a language Sangam actually supports. Region-tagged or
+ * unknown tags are refused rather than silently downgraded, so a bad
+ * preference surfaces as `invalid_payload` instead of a surprise default.
+ */
+export function isLanguageCode(value: unknown): value is SupportedLanguage {
   return (
     typeof value === "string" &&
-    value.length <= MAX_LANGUAGE_LENGTH &&
-    LANGUAGE_PATTERN.test(value)
+    (SUPPORTED_LANGUAGE_CODES as readonly string[]).includes(
+      normalizeLanguage(value),
+    )
   );
 }
 

@@ -31,6 +31,7 @@ function toProfile(participant: RoomParticipant) {
     status: "connected" as const,
     displayName: participant.displayName,
     language: participant.language,
+    listeningLanguage: participant.listeningLanguage,
   };
 }
 
@@ -55,6 +56,17 @@ function confirmJoin(
   const { room, participant } = result;
   socket.join(channelFor(room.code));
   socket.emit("room:state", rooms.snapshot(room));
+  /*
+   * Replay this room's retained history to the joiner only — emitted before
+   * the ack and before any later live utterance, so the client can order
+   * replayed rows ahead of everything it receives afterwards. Interims are
+   * never part of history. Membership was just confirmed above, so a joiner
+   * can only ever be sent their own room's transcript.
+   */
+  socket.emit("conversation:history", {
+    code: room.code,
+    entries: [...rooms.transcriptOf(room)],
+  });
   if (announce) {
     socket
       .to(channelFor(room.code))
@@ -118,6 +130,7 @@ export function registerRoomHandlers(
     const result = rooms.createAndJoin(parsed.value.code, {
       socketId: socket.id,
       language: parsed.value.language,
+      listeningLanguage: parsed.value.listeningLanguage,
       displayName: parsed.value.displayName ?? "",
     });
     if (!result.ok) {
@@ -139,6 +152,7 @@ export function registerRoomHandlers(
     const result = rooms.joinRoom(parsed.value.code, {
       socketId: socket.id,
       language: parsed.value.language,
+      listeningLanguage: parsed.value.listeningLanguage,
       displayName: parsed.value.displayName ?? "",
     });
     if (!result.ok) {
@@ -194,6 +208,9 @@ export function registerRoomHandlers(
       },
       translation: { status: "unavailable" as const },
     };
+    // Finalized rows join the room's history so a rejoin can replay them;
+    // interims are relayed but never retained.
+    rooms.recordUtterance(room, entry);
     io.to(channelFor(membership.code)).emit("conversation:utterance", {
       entry,
     });

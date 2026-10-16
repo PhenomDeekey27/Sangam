@@ -5,6 +5,7 @@ import {
   isLanguageCode,
   isPlainObject,
   isRoomCode,
+  normalizeLanguage,
   normalizeRoomCode,
   sanitizeDisplayName,
   sanitizeText,
@@ -16,8 +17,17 @@ export type ParseResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: SocketError };
 
-/** Client fields accepted on join/create; anything else is rejected. */
-export const JOIN_KEYS = ["code", "language", "displayName"] as const;
+/**
+ * Client fields accepted on join/create; anything else is rejected.
+ * `language` is the speaking preference (required) and `listeningLanguage` the
+ * optional "I want to hear" preference, which the room defaults when absent.
+ */
+export const JOIN_KEYS = [
+  "code",
+  "language",
+  "listeningLanguage",
+  "displayName",
+] as const;
 /** Client fields accepted on leave. */
 export const LEAVE_KEYS = ["code"] as const;
 /** Client fields accepted on an utterance; `side`/`id` are never accepted. */
@@ -34,11 +44,26 @@ const UTTERANCE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 export interface JoinPayload {
   readonly code: string;
   readonly language: string;
+  /** `null` when the client supplied none; the room applies its own default. */
+  readonly listeningLanguage: string | null;
   readonly displayName: string | null;
 }
 
 function fail(error: WireError): ParseResult<never> {
   return { ok: false, error };
+}
+
+/**
+ * Narrow an optional language preference: absent means "no preference", any
+ * other value must be one Sangam supports, so an invalid selection is refused
+ * instead of being silently swapped for a default.
+ */
+export function parseOptionalLanguage(
+  value: unknown,
+): ParseResult<string | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (!isLanguageCode(value)) return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
+  return { ok: true, value: normalizeLanguage(value) };
 }
 
 /**
@@ -80,13 +105,16 @@ export function parseJoinPayload(raw: unknown): ParseResult<JoinPayload> {
   if (!isLanguageCode(raw.language)) {
     return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
   }
+  const listening = parseOptionalLanguage(raw.listeningLanguage);
+  if (!listening.ok) return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
   const displayName = sanitizeDisplayName(raw.displayName);
   if (!displayName.ok) return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
   return {
     ok: true,
     value: {
       code: normalizeRoomCode(raw.code),
-      language: raw.language,
+      language: normalizeLanguage(raw.language),
+      listeningLanguage: listening.value,
       displayName: displayName.name,
     },
   };
@@ -135,7 +163,11 @@ export function parseUtterancePayload(raw: unknown): ParseResult<{
   if (text === null) return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
   return {
     ok: true,
-    value: { utteranceId: raw.utteranceId, text, language: raw.language },
+    value: {
+      utteranceId: raw.utteranceId,
+      text,
+      language: normalizeLanguage(raw.language),
+    },
   };
 }
 
@@ -155,5 +187,8 @@ export function parseInterimPayload(
   }
   const text = sanitizeInterimText(raw.text);
   if (text === null) return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
-  return { ok: true, value: { text, language: raw.language } };
+  return {
+    ok: true,
+    value: { text, language: normalizeLanguage(raw.language) },
+  };
 }

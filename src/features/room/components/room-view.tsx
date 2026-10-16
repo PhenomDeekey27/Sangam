@@ -11,14 +11,14 @@ import { InviteDialog } from "@/features/room/components/invite-dialog";
 import { RoomHeader } from "@/features/room/components/room-header";
 import { RoomStage } from "@/features/room/components/room-stage";
 import { StateBanner } from "@/features/room/components/state-banner";
+import type { LanguagePreferences } from "@/features/room/utils/language-preference";
 import type { RoomMode } from "@/features/room/types";
-import type { LanguageCode } from "@/types";
 
 export interface RoomViewProps {
   readonly code: string;
   readonly mode: RoomMode;
-  readonly youLanguage: LanguageCode;
-  readonly partnerLanguage: LanguageCode;
+  /** This participant's own validated speaking/listening preferences. */
+  readonly preferences: LanguagePreferences;
 }
 
 /** Author label per side: always "You" for your own seat. */
@@ -32,25 +32,16 @@ function authorNames(
 }
 
 /** The live conversation room, driven by the real-time server. */
-export function RoomView({
-  code,
-  mode,
-  youLanguage,
-  partnerLanguage,
-}: RoomViewProps) {
-  const conversation = useRoomConversation({
-    code,
-    mode,
-    youLanguage,
-    partnerLanguage,
-  });
+export function RoomView({ code, mode, preferences }: RoomViewProps) {
+  const conversation = useRoomConversation({ code, mode, preferences });
   const [inviteOpen, setInviteOpen] = useState(false);
 
   const {
     connection,
     roomError,
     mic,
-    speechSupported,
+    speechSupport,
+    speechTransport,
     recognitionStatus,
     recognitionError,
     you,
@@ -113,7 +104,7 @@ export function RoomView({
             </StateBanner>
           ) : null}
 
-          {!roomError && !speechSupported ? (
+          {!roomError && speechSupport === "unsupported" ? (
             <StateBanner
               tone="info"
               icon={CircleAlert}
@@ -124,13 +115,26 @@ export function RoomView({
             </StateBanner>
           ) : null}
 
-          {!roomError && speechSupported && recognitionError ? (
+          {!roomError && speechSupport === "supported" && recognitionError ? (
             <StateBanner
               tone="error"
               icon={CircleAlert}
               title="Microphone problem"
             >
               {recognitionError.message}
+            </StateBanner>
+          ) : null}
+
+          {!roomError && speechTransport === "browser" ? (
+            <StateBanner
+              tone="info"
+              icon={CircleAlert}
+              title="Using your browser's speech recognition"
+            >
+              This room has no server speech provider configured, so recognition
+              runs in the browser. Results vary between browsers — Chrome and
+              Edge are the most reliable, Brave may block the service, and
+              Indic-language accuracy can be uneven. Typing always works.
             </StateBanner>
           ) : null}
 
@@ -212,8 +216,7 @@ export function RoomView({
         open={inviteOpen}
         onClose={() => setInviteOpen(false)}
         code={code}
-        youLanguage={youLanguage}
-        partnerLanguage={partnerLanguage}
+        preferences={preferences}
       />
     </div>
   );

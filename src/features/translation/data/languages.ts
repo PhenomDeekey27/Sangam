@@ -31,13 +31,39 @@ export const LANGUAGES: readonly Language[] = [
   { code: "zh", label: "Chinese", native: "中文" },
 ];
 
-/** Fallback when a URL carries no language preference. */
-export const DEFAULT_SPOKEN_LANGUAGE: LanguageCode = "en";
-export const DEFAULT_HEARD_LANGUAGE: LanguageCode = "ta";
+/** Every code Sangam offers, for validating preferences from URLs or events. */
+export const SUPPORTED_LANGUAGE_CODES: readonly LanguageCode[] = LANGUAGES.map(
+  (language) => language.code,
+);
+
+/**
+ * Trim and lower-case a language tag. BCP-47 tags are case-insensitive, so
+ * `TA` and `ta` name the same language.
+ */
+export function normalizeLanguageCode(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/** True when a raw value is a language Sangam actually offers. */
+export function isSupportedLanguage(value: unknown): value is LanguageCode {
+  return (
+    typeof value === "string" &&
+    SUPPORTED_LANGUAGE_CODES.includes(normalizeLanguageCode(value))
+  );
+}
+
+/**
+ * Defaults used only when no valid preference was supplied. A valid selection
+ * is never replaced with these.
+ */
+export const DEFAULT_SPEAKING_LANGUAGE: LanguageCode = "en";
+export const DEFAULT_LISTENING_LANGUAGE: LanguageCode = "en";
 
 /** Look up a language entry, or `undefined` for an unknown code. */
 export function findLanguage(code: LanguageCode): Language | undefined {
-  return LANGUAGES.find((language) => language.code === code);
+  return LANGUAGES.find(
+    (language) => language.code === normalizeLanguageCode(code),
+  );
 }
 
 /** English label for a code, falling back to the uppercased code. */
@@ -48,4 +74,10 @@ export function languageLabel(code: LanguageCode): string {
 /** Endonym for a code, falling back to the code itself. */
 export function languageNative(code: LanguageCode): string {
   return findLanguage(code)?.native ?? code;
+}
+
+/** Canonical code when `value` is supported; `null` otherwise. */
+export function supportedLanguageOrNull(value: unknown): LanguageCode | null {
+  if (!isSupportedLanguage(value)) return null;
+  return normalizeLanguageCode(value);
 }

@@ -47,6 +47,8 @@ export interface ParticipantProfile extends Participant {
   readonly displayName: string;
   /** Language this participant speaks into the conversation. */
   readonly language: LanguageCode;
+  /** Language this participant wants to hear; stored per participant. */
+  readonly listeningLanguage: LanguageCode;
 }
 
 /** Membership snapshot of a room. */

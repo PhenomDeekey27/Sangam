@@ -1,24 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   InterimUtterance,
   SpeakerState,
   TranscriptEntry,
 } from "@/features/conversation/types";
-import { newUtteranceId } from "@/features/conversation/utils/utterance-id";
+import { useTranscriptEntries } from "@/features/room/hooks/use-transcript-entries";
+import { createRoomActions } from "@/features/room/services/room-actions";
 import {
   destroyRoomSocket,
   getRoomSocket,
 } from "@/features/room/services/socket";
+import { setSpeechCapabilities } from "@/features/speech/services/speech-capabilities";
 import type {
   ConnectionStatus,
   ParticipantProfile,
   RoomMode,
   SpeakerSide,
 } from "@/features/room/types";
-import { type SeatAssignment } from "@/features/room/utils/derive";
-import type { RoomOpAck, SocketError } from "@/types/socket";
+import {
+  seatsFromSnapshot,
+  type SeatAssignment,
+} from "@/features/room/utils/derive";
+import type {
+  RoomOpAck,
+  SocketError,
+  SpeechCapabilities,
+} from "@/types/socket";
 import type { LanguageCode } from "@/types";
 import { useTimerQueue } from "@/hooks/use-timer-queue";
 
@@ -36,6 +45,8 @@ export interface UseRoomSocketOptions {
   readonly mode: RoomMode;
   /** This participant's spoken language, stamped on every utterance. */
   readonly language: LanguageCode;
+  /** This participant's "I want to hear" preference, stored on their seat. */
+  readonly listeningLanguage: LanguageCode;
   /** Report status messages to the shared `aria-live` region. */
   readonly notify: (message: string | null) => void;
   /** The connection dropped or membership failed: stop live capture. */
@@ -70,6 +81,7 @@ export function useRoomSocket({
   code,
   mode,
   language,
+  listeningLanguage,
   notify,
   onSilence,
 }: UseRoomSocketOptions): RoomSocketApi {
@@ -79,7 +91,7 @@ export function useRoomSocket({
     you: null,
     partner: null,
   });
-  const [entries, setEntries] = useState<readonly TranscriptEntry[]>([]);
+  const { entries, applyUtterance, applyHistory } = useTranscriptEntries();
   const [partnerInterim, setPartnerInterim] = useState<InterimUtterance | null>(
     null,
   );
@@ -92,7 +104,6 @@ export function useRoomSocket({
   const seatsRef = useRef<SeatAssignment>(seats);
   const enterRoomRef = useRef<(attempt: RoomMode) => void>(() => {});
   const pendingSnapshotRef = useRef<readonly ParticipantProfile[] | null>(null);
-  const entryIdsRef = useRef(new Set<string>());
   const notifyRef = useRef(notify);
   const silenceRef = useRef(onSilence);
 
@@ -118,14 +129,7 @@ export function useRoomSocket({
         pendingSnapshotRef.current = participants;
         return;
       }
-      setSeats({
-        you:
-          participants.find((participant) => participant.id === self.id) ??
-          null,
-        partner:
-          participants.find((participant) => participant.id !== self.id) ??
-          null,
-      });
+      setSeats(seatsFromSnapshot(participants, self.id));
     },
     [],
   );
@@ -135,7 +139,9 @@ export function useRoomSocket({
     const roomCode = code;
 
     const enterRoom = (attempt: RoomMode) => {
-      const payload = { code: roomCode, language };
+      // Both preferences ride along on create, join, and every reconnect, so
+      // the seat the server re-creates carries the same languages.
+      const payload = { code: roomCode, language, listeningLanguage };
       const onResponse = (response: RoomOpAck) => {
         if (!response.ok) {
           if (
@@ -208,13 +214,21 @@ export function useRoomSocket({
     };
 
     const onUtterance = (payload: { readonly entry: TranscriptEntry }) => {
-      if (entryIdsRef.current.has(payload.entry.utterance.id)) return;
-      entryIdsRef.current.add(payload.entry.utterance.id);
-      setEntries((previous) => [...previous, payload.entry]);
+      if (!applyUtterance(payload.entry)) return;
       const self = selfRef.current;
       if (self && payload.entry.utterance.speakerSide === self.side) return;
       setPartnerInterim(null);
       partnerActivity();
+    };
+
+    const onHistory = (payload: {
+      readonly code: string;
+      readonly entries: readonly TranscriptEntry[];
+    }) => {
+      // Only this room's history is accepted; the merge never duplicates a row
+      // and orders by the server's per-room sequence.
+      if (payload.code !== roomCode) return;
+      applyHistory(payload.entries);
     };
 
     const onInterim = (payload: {
@@ -254,6 +268,10 @@ export function useRoomSocket({
       notifyRef.current(error.message);
     };
 
+    const onCapabilities = (payload: SpeechCapabilities) => {
+      setSpeechCapabilities(payload);
+    };
+
     const onConnect = () => {
       setConnection("connecting");
       enterRoom(mode);
@@ -268,6 +286,9 @@ export function useRoomSocket({
       setPartnerInterim(null);
       setSeats({ you: null, partner: null });
       setConnection("disconnected");
+      // Capabilities are per-connection; drop them so a stale provider label
+      // cannot route the next capture to a server that is no longer reachable.
+      setSpeechCapabilities(null);
       notifyRef.current("Connection lost — reconnecting…");
       silenceRef.current();
     };
@@ -284,8 +305,10 @@ export function useRoomSocket({
     socket.on("room:participant_joined", onParticipantJoined);
     socket.on("room:participant_left", onParticipantLeft);
     socket.on("conversation:utterance", onUtterance);
+    socket.on("conversation:history", onHistory);
     socket.on("conversation:interim", onInterim);
     socket.on("conversation:interrupt", onInterrupt);
+    socket.on("speech:capabilities", onCapabilities);
     socket.on("error", onErrorEvent);
 
     if (socket.connected) {
@@ -295,81 +318,46 @@ export function useRoomSocket({
     }
 
     return () => {
-      socket.off("connect", onConnect);
-      socket.off("disconnect", onDisconnect);
-      socket.off("connect_error", onConnectError);
-      socket.off("room:state", onState);
-      socket.off("room:participant_joined", onParticipantJoined);
-      socket.off("room:participant_left", onParticipantLeft);
-      socket.off("conversation:utterance", onUtterance);
-      socket.off("conversation:interim", onInterim);
-      socket.off("conversation:interrupt", onInterrupt);
-      socket.off("error", onErrorEvent);
+      // Leave first (the server hears it), then drop the singleton: it removes
+      // every listener registered above and disconnects the transport, so no
+      // handler from this screen can outlive it.
       if (selfRef.current) {
         socket.emit("room:leave", { code: roomCode });
       }
       destroyRoomSocket();
+      setSpeechCapabilities(null);
     };
-    // `language` is read through the closure created on mount; live language
-    // switches apply to the next join, not mid-session.
+    // Languages are read through the closure created on mount; a preference
+    // change applies to the next join, and every reconnect re-sends the
+    // languages this seat joined with.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applySnapshot, clearTimers, partnerActivity, schedule]);
+  }, [
+    applyHistory,
+    applySnapshot,
+    applyUtterance,
+    clearTimers,
+    partnerActivity,
+    schedule,
+  ]);
 
-  const sendUtterance = useCallback(
-    (raw: string, source: "typed" | "speech") => {
-      const text = raw.trim();
-      if (!text) return;
-      const socket = getRoomSocket();
-      if (!socket.connected || !selfRef.current) {
-        notifyRef.current("Not connected — reconnect before sending messages.");
-        return;
-      }
-      socket.emit("conversation:utterance", {
-        utteranceId: newUtteranceId(),
-        text,
+  // Send paths live in one small policy module. `selfId` comes from the seat
+  // the server assigned us, so an emit is only attempted once we are seated.
+  const selfId = seats.you?.id ?? null;
+  const partnerPresent = seats.partner !== null;
+  const actions = useMemo(
+    () =>
+      createRoomActions({
         language,
-      });
-      if (source === "typed") {
-        notifyRef.current(
-          seatsRef.current.partner
-            ? "Message sent — translation is not applied yet, so it arrives as-is."
-            : "Nobody else is connected — only this room's live transcript has your message.",
-        );
-      } else if (!seatsRef.current.partner) {
-        notifyRef.current(
-          "Nobody else is connected yet — your words are in this room's transcript.",
-        );
-      }
-    },
-    [language],
+        selfId,
+        partnerPresent,
+        notify,
+        setSelfState: setYouState,
+        setPartnerState,
+        clearTimers,
+        schedule,
+      }),
+    [clearTimers, language, notify, partnerPresent, schedule, selfId],
   );
-
-  const emitInterim = useCallback(
-    (text: string) => {
-      const socket = getRoomSocket();
-      if (!socket.connected || !selfRef.current) return;
-      socket.emit("conversation:interim", { text, language });
-    },
-    [language],
-  );
-
-  const interrupt = useCallback(() => {
-    const socket = getRoomSocket();
-    if (!socket.connected || !selfRef.current) return;
-    socket.emit("conversation:interrupt");
-    clearTimers();
-    setYouState("speaking");
-    setPartnerState("interrupted");
-    notifyRef.current(
-      seatsRef.current.partner
-        ? "You interrupted your partner."
-        : "Interrupted — nobody else is in the room right now.",
-    );
-    schedule(() => {
-      setYouState("idle");
-      setPartnerState("idle");
-    }, SPEAKING_RESET_MS);
-  }, [clearTimers, schedule]);
 
   const retryConnection = useCallback(() => {
     const socket = getRoomSocket();
@@ -392,8 +380,6 @@ export function useRoomSocket({
     youState,
     partnerState,
     retryConnection,
-    sendUtterance,
-    emitInterim,
-    interrupt,
+    ...actions,
   };
 }

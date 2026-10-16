@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import {
   MAX_TEXT_LENGTH,
+  SUPPORTED_LANGUAGE_CODES,
   isLanguageCode,
   isRoomCode,
+  normalizeLanguage,
   normalizeRoomCode,
   sanitizeDisplayName,
   sanitizeText,
@@ -37,19 +40,45 @@ describe("room-code validation (mirrors the frontend utility)", () => {
   });
 });
 
-describe("language validation", () => {
-  it("accepts simple and region-tagged codes", () => {
+describe("language validation (supported list)", () => {
+  it("accepts the languages Sangam offers, case-insensitively", () => {
     assert.equal(isLanguageCode("en"), true);
     assert.equal(isLanguageCode("zh"), true);
-    assert.equal(isLanguageCode("pt-BR"), true);
-    assert.equal(isLanguageCode("es-419"), true);
+    assert.equal(isLanguageCode("TA"), true);
+    assert.equal(isLanguageCode(" pt "), true);
   });
 
-  it("rejects junk", () => {
+  it("refuses unknown, region-tagged, and malformed tags", () => {
+    // A preference outside the shipped list must fail loudly instead of being
+    // silently downgraded to a default language.
     assert.equal(isLanguageCode("english"), false);
+    assert.equal(isLanguageCode("pt-BR"), false);
+    assert.equal(isLanguageCode("es-419"), false);
+    assert.equal(isLanguageCode("xx"), false);
     assert.equal(isLanguageCode("E"), false);
     assert.equal(isLanguageCode(""), false);
     assert.equal(isLanguageCode(123), false);
+  });
+
+  it("normalizes a tag to its canonical form", () => {
+    assert.equal(normalizeLanguage(" TA "), "ta");
+  });
+
+  it("keeps the server list in step with the frontend selectors", async () => {
+    // The server cannot import frontend modules (it builds from its own
+    // sources), so this reads the selector data and pins both lists together.
+    const source = await readFile(
+      new URL(
+        "../../../src/features/translation/data/languages.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const frontendCodes = [...source.matchAll(/code: "([a-z]{2})"/g)]
+      .map((match) => match[1])
+      .sort();
+    assert.ok(frontendCodes.length > 0, "expected to find language entries");
+    assert.deepEqual([...SUPPORTED_LANGUAGE_CODES].sort(), frontendCodes);
   });
 });
 

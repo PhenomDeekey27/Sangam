@@ -20,6 +20,35 @@ export interface SocketError {
 }
 
 /**
+ * Which speech-to-text engine the server is currently able to run.
+ * - `deepgram` — a real, credentialed streaming provider (server-side only).
+ * - `mock`     — a deterministic development/test double; never real speech.
+ * - `none`     — no server provider configured; clients fall back to the
+ *                browser's own (limited) recognition or the text composer.
+ * The API key never leaves the server: this is only a capability label.
+ */
+export type SpeechProviderId = "deepgram" | "mock" | "none";
+
+/** What the server advertises about its speech pipeline on connect. */
+export interface SpeechCapabilities {
+  readonly provider: SpeechProviderId;
+  /** True when the provider can consume a live audio stream. */
+  readonly streaming: boolean;
+  /** True when the provider emits replaceable interim transcripts. */
+  readonly interim: boolean;
+  /** Languages the provider accepts (BCP-47 primary subtags). */
+  readonly languages: readonly LanguageCode[];
+}
+
+/**
+ * Reply to `speech:start`. Success echoes the language the provider was
+ * actually opened with, so a client can confirm its selection was honoured.
+ */
+export type SpeechStartAck =
+  | { readonly ok: true; readonly language: LanguageCode }
+  | { readonly ok: false; readonly error: SocketError };
+
+/**
  * Reply to a `room:create` / `room:join` acknowledgement. Membership problems
  * (unknown room, full room, malformed code) arrive here rather than as a
  * fire-and-forget `error` event, so the caller always learns the outcome.
@@ -54,14 +83,28 @@ export type RoomOpAck =
  * per-room `sequence` for ordering. `conversation:interim` carries
  * replaceable partial recognition text (empty text clears the line) and is
  * relayed with the sender's server-side side.
+ *
+ * Language preferences: `language` is what the participant speaks (their own
+ * recognition locale) and `listeningLanguage` is what they want to hear. Both
+ * are validated server-side against the supported list and stored per
+ * participant, so the two seats never overwrite each other. `listeningLanguage`
+ * is optional on the wire; omitting it lets the room apply its default.
  */
 export interface ClientToServerEvents {
   "room:create": (
-    payload: { readonly code: RoomCode; readonly language: LanguageCode },
+    payload: {
+      readonly code: RoomCode;
+      readonly language: LanguageCode;
+      readonly listeningLanguage?: LanguageCode;
+    },
     ack?: (response: RoomOpAck) => void,
   ) => void;
   "room:join": (
-    payload: { readonly code: RoomCode; readonly language: LanguageCode },
+    payload: {
+      readonly code: RoomCode;
+      readonly language: LanguageCode;
+      readonly listeningLanguage?: LanguageCode;
+    },
     ack?: (response: RoomOpAck) => void,
   ) => void;
   "room:leave": (payload: { readonly code: RoomCode }) => void;
@@ -80,6 +123,26 @@ export interface ClientToServerEvents {
     readonly language: LanguageCode;
   }) => void;
   "conversation:interrupt": () => void;
+  /**
+   * Open a server-side recognition session for this socket's seat. The server
+   * ignores any language that does not match the seat's stored speaking
+   * language, and refuses sockets that are not seated room members.
+   */
+  "speech:start": (
+    payload: {
+      readonly language: LanguageCode;
+      /** Metadata for the captured stream; validated server-side. */
+      readonly mimeType?: string;
+    },
+    ack?: (response: SpeechStartAck) => void,
+  ) => void;
+  /**
+   * One captured audio chunk. Binary so the codec payload is passed through
+   * untouched; the server enforces per-session byte ceilings.
+   */
+  "speech:audio": (chunk: ArrayBuffer) => void;
+  /** Close the recognition session gracefully (a final may still flush). */
+  "speech:stop": () => void;
 }
 
 export interface ServerToClientEvents {
@@ -96,6 +159,16 @@ export interface ServerToClientEvents {
   }) => void;
   "conversation:utterance": (payload: {
     readonly entry: TranscriptEntry;
+  }) => void;
+  /**
+   * Retained transcript rows for the room this socket just joined, oldest
+   * first. Sent only to the joiner, only for their own room, and before the
+   * join ack, so a client can merge history ahead of live messages. Interims
+   * are never included.
+   */
+  "conversation:history": (payload: {
+    readonly code: RoomCode;
+    readonly entries: readonly TranscriptEntry[];
   }) => void;
   /**
    * Replaceable interim transcript line from the room's other member.
@@ -118,5 +191,22 @@ export interface ServerToClientEvents {
     readonly side: SpeakerSide;
     readonly state: SpeakerState;
   }) => void;
+  /**
+   * Server speech pipeline availability, sent once per connection. Clients use
+   * it to choose the server pipeline over browser-native recognition; the
+   * provider's credentials are never part of this payload.
+   */
+  "speech:capabilities": (payload: SpeechCapabilities) => void;
+  /**
+   * Replaceable interim transcript for the socket's own speech, sent only to
+   * the speaker (the partner receives the same line as `conversation:interim`).
+   * An empty `text` clears the line after a final.
+   */
+  "speech:interim": (payload: {
+    readonly text: string;
+    readonly language: LanguageCode;
+  }) => void;
+  /** A fatal provider/heartbeat failure for the speaker's session. */
+  "speech:error": (payload: SocketError) => void;
   error: (payload: SocketError) => void;
 }

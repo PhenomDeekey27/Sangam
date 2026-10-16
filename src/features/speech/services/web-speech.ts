@@ -61,7 +61,11 @@ export interface BrowserRecognition {
   abort(): void;
 }
 
-/** Map a `SpeechRecognitionErrorEvent.error` name to a Sangam speech error. */
+/**
+ * Map a `SpeechRecognitionErrorEvent.error` name to a Sangam speech error.
+ * Every branch the browser can realistically report is answered with specific,
+ * actionable copy — a dead microphone must never look like "nothing happened".
+ */
 export function mapRecognitionError(error: string): SpeechError {
   switch (error) {
     case "not-allowed":
@@ -74,7 +78,7 @@ export function mapRecognitionError(error: string): SpeechError {
       return {
         code: "permission_denied",
         message:
-          "This browser blocked its speech recognition service. Type your message instead.",
+          "This browser blocked its speech recognition service. Type your message instead — Chrome, Edge, or Safari is recommended.",
       };
     case "audio-capture":
       return {
@@ -85,19 +89,32 @@ export function mapRecognitionError(error: string): SpeechError {
       return {
         code: "network",
         message:
-          "Speech recognition lost its network connection — check your connection and try again.",
+          "Speech recognition lost its network connection — check your connection and try again. Browsers that block the speech service (for example Brave) may fail here; Chrome, Edge, or Safari is recommended.",
       };
     case "no-speech":
       return {
         code: "no_speech",
         message: "Didn't hear anything — keep speaking after the pause.",
       };
+    case "language-not-supported":
+      return {
+        code: "language_not_supported",
+        message:
+          "This browser can't recognize that language — pick another speaking language, or type your message instead.",
+      };
+    case "audio-busy":
+      return {
+        code: "no_microphone",
+        message:
+          "Another app is using the microphone — close it, then turn the microphone on again.",
+      };
     case "aborted":
       return { code: "aborted", message: "Speech recognition was stopped." };
     default:
       return {
         code: "unknown",
-        message: "Speech recognition hit an unexpected problem.",
+        message:
+          "Speech recognition hit an unexpected problem — turn the microphone off and on again, or type your message instead.",
       };
   }
 }

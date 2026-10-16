@@ -7,6 +7,7 @@ import type {
   TranscriptEntry,
 } from "@/features/conversation/types";
 import { useRoomSocket } from "@/features/room/hooks/use-room-socket";
+import { getRoomSocket } from "@/features/room/services/socket";
 import type {
   ConnectionStatus,
   ParticipantProfile,
@@ -25,19 +26,22 @@ import type {
   PlaybackState,
   RecognitionStatus,
   SpeechError,
+  SpeechSupport,
+  SpeechTransport,
 } from "@/features/speech/types";
+import type { LanguagePreferences } from "@/features/room/utils/language-preference";
 import type { SocketError } from "@/types/socket";
-import type { LanguageCode } from "@/types";
 
 export interface RoomConversationOptions {
   readonly code: string;
   readonly mode: RoomMode;
-  readonly youLanguage: LanguageCode;
   /**
-   * The partner's spoken language, carried for the translation stage. Not
-   * consumed yet — messages are relayed untranslated.
+   * This participant's validated preferences: `speaking` drives their own
+   * recognition locale, `listening` is what the room should translate into
+   * for them (a later stage). Both are sent with every join so they survive
+   * reconnects.
    */
-  readonly partnerLanguage: LanguageCode;
+  readonly preferences: LanguagePreferences;
 }
 
 /** State and actions the room UI needs. */
@@ -46,8 +50,10 @@ export interface RoomConversation {
   /** Fatal membership failure (unknown room, full room) for the error banner. */
   readonly roomError: SocketError | null;
   readonly mic: MicPermission;
-  /** Browser lacks `SpeechRecognition`; the mic button is disabled. */
-  readonly speechSupported: boolean;
+  /** Browser speech-recognition availability for the mic button and banner. */
+  readonly speechSupport: SpeechSupport;
+  /** Which pipeline the microphone will use (server, browser, or none). */
+  readonly speechTransport: SpeechTransport;
   readonly recognitionStatus: RecognitionStatus;
   /** Non-null after a fatal capture failure (denied, no mic, …). */
   readonly recognitionError: SpeechError | null;
@@ -81,8 +87,9 @@ export interface RoomConversation {
 export function useRoomConversation({
   code,
   mode,
-  youLanguage,
+  preferences,
 }: RoomConversationOptions): RoomConversation {
+  const { speaking, listening } = preferences;
   const [notice, setNotice] = useState<string | null>(null);
   const notify = useCallback(
     (message: string | null) => setNotice(message),
@@ -108,7 +115,8 @@ export function useRoomConversation({
   } = useRoomSocket({
     code,
     mode,
-    language: youLanguage,
+    language: speaking,
+    listeningLanguage: listening,
     notify,
     onSilence: () => captureStopRef.current(),
   });
@@ -118,11 +126,16 @@ export function useRoomConversation({
     [sendUtterance],
   );
 
+  // Recognition always follows *this* participant's speaking language, which
+  // is what both the URL and the server record for their seat. When the server
+  // advertises a streaming provider, audio is streamed there instead — the same
+  // callbacks arrive through room events either way.
   const capture = useSpeechCapture({
-    language: youLanguage,
+    language: speaking,
     onFinalText: sendRecognized,
     onInterimEmit: emitInterim,
     onNotice: notify,
+    getSocket: getRoomSocket,
   });
 
   useEffect(() => {
@@ -135,6 +148,7 @@ export function useRoomConversation({
   );
 
   const toggleCapture = useCallback(() => {
+    if (capture.support === "checking") return;
     if (connection !== "connected" || !seats.you) {
       setNotice("Join the room before turning on the microphone.");
       return;
@@ -164,20 +178,21 @@ export function useRoomConversation({
       map[seats.you.side] = {
         side: seats.you.side,
         text: capture.interim,
-        language: youLanguage,
+        language: speaking,
       };
     }
     if (partnerInterim && partnerInterim.text.trim().length > 0) {
       map[partnerInterim.side] = partnerInterim;
     }
     return map;
-  }, [capture.interim, partnerInterim, seats.you, youLanguage]);
+  }, [capture.interim, partnerInterim, seats.you, speaking]);
 
   return {
     connection,
     roomError,
-    mic: capture.supported ? capture.permission : "unavailable",
-    speechSupported: capture.supported,
+    mic: capture.support === "unsupported" ? "unavailable" : capture.permission,
+    speechSupport: capture.support,
+    speechTransport: capture.transport,
     recognitionStatus: capture.status,
     recognitionError: capture.error,
     you: seats.you ? { ...seats.you, displayName: "You" } : null,

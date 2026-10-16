@@ -18,11 +18,36 @@ export interface RoomParticipant {
   /** Socket connection this membership is bound to. */
   readonly socketId: string;
   readonly side: ParticipantSide;
-  /** BCP-47-ish language tag the participant speaks (validated on join). */
+  /**
+   * Language this participant speaks into the conversation. Drives their own
+   * speech recognition; validated against the supported list on join.
+   */
   readonly language: string;
+  /**
+   * Language this participant wants to *hear* (the translation target in a
+   * later stage). Stored per participant — never shared between the two
+   * seats, so one person's preference cannot overwrite the other's.
+   */
+  readonly listeningLanguage: string;
   /** Optional display name; server default when the client sends none. */
   readonly displayName: string;
   readonly joinedAt: number;
+}
+
+/** One finalized utterance as retained in room history (never an interim). */
+export interface RoomUtterance {
+  readonly id: string;
+  readonly speakerSide: ParticipantSide;
+  readonly language: string;
+  readonly text: string;
+  readonly finalizedAt: number;
+  readonly sequence: number;
+}
+
+/** A retained transcript row: the original utterance plus translation state. */
+export interface RoomTranscriptEntry {
+  readonly utterance: RoomUtterance;
+  readonly translation: { readonly status: "unavailable" };
 }
 
 /** An in-memory room: at most one participant per side. */
@@ -36,6 +61,12 @@ export interface Room {
   utteranceSeq: number;
   /** Client-generated utterance ids already relayed; rejects re-plays. */
   readonly usedUtteranceIds: Set<string>;
+  /**
+   * Finalized transcript entries for this room's lifetime, oldest first.
+   * Interims are deliberately never stored. Lives only as long as the room:
+   * it is dropped with the room on expiry and lost on server restart.
+   */
+  readonly transcript: RoomTranscriptEntry[];
 }
 
 /** Where a socket is currently a member, if anywhere. */
@@ -55,6 +86,7 @@ export interface RoomSnapshot {
     readonly status: "connected";
     readonly displayName: string;
     readonly language: string;
+    readonly listeningLanguage: string;
   }[];
 }
 

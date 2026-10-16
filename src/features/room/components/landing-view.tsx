@@ -20,9 +20,10 @@ import { LanguageSelect } from "@/features/room/components/language-select";
 import { VoiceBridge } from "@/features/room/components/voice-bridge";
 import { createRoomCode } from "@/features/room/utils/room-code";
 import { roomPath } from "@/features/room/utils/room-path";
+import { languageQuery } from "@/features/room/utils/language-preference";
 import {
-  DEFAULT_HEARD_LANGUAGE,
-  DEFAULT_SPOKEN_LANGUAGE,
+  DEFAULT_LISTENING_LANGUAGE,
+  DEFAULT_SPEAKING_LANGUAGE,
   LANGUAGES,
   languageLabel,
 } from "@/features/translation/data/languages";
@@ -51,20 +52,20 @@ const FACTS = [
 /** Landing screen: choose languages, then create or join a room. */
 export function LandingView() {
   const router = useRouter();
-  const [spoken, setSpoken] = useState<LanguageCode>(DEFAULT_SPOKEN_LANGUAGE);
-  const [heard, setHeard] = useState<LanguageCode>(DEFAULT_HEARD_LANGUAGE);
+  const [spoken, setSpoken] = useState<LanguageCode>(DEFAULT_SPEAKING_LANGUAGE);
+  const [heard, setHeard] = useState<LanguageCode>(DEFAULT_LISTENING_LANGUAGE);
   const [joinOpen, setJoinOpen] = useState(false);
 
   /**
    * Navigate to the room screen. Creators carry `create=1` so that screen
    * reserves the code through the server before reporting success; guests
-   * join an existing room. Language preferences ride in the URL, and the
-   * invite link swaps them for the partner.
+   * join an existing room. Both preferences — what I speak and what I want to
+   * hear — ride in the URL in the exact form the room route parses, and the
+   * invite link mirrors them for the partner.
    */
   function enterRoom(code: RoomCode, create: boolean) {
-    const params = new URLSearchParams({ speak: spoken, hear: heard });
-    if (create) params.set("create", "1");
-    router.push(`${roomPath(code)}?${params.toString()}`);
+    const query = languageQuery({ speaking: spoken, listening: heard });
+    router.push(`${roomPath(code)}?${query}${create ? "&create=1" : ""}`);
   }
 
   return (
@@ -109,11 +110,11 @@ export function LandingView() {
               icon={Mic}
               value={spoken}
               onChange={setSpoken}
-            />
+            />{" "}
             <LanguageSelect
               id="heard-language"
               label="I want to hear"
-              hint="What arrives for you in the room."
+              hint="The language you want your partner's words in."
               icon={Headphones}
               value={heard}
               onChange={setHeard}
@@ -132,7 +133,7 @@ export function LandingView() {
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <span className="bg-speaker-b size-2.5 rounded-full" />
-                Partner hears you in {languageLabel(heard)}
+                You hear {languageLabel(heard)} — your partner speaks it
               </span>
             </div>
           </div>

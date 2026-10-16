@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { errorFor, ErrorCodes, type WireError } from "../utils/errors.js";
-import { isRoomCode, normalizeRoomCode } from "./room-validation.js";
+import {
+  DEFAULT_LISTENING_LANGUAGE,
+  isRoomCode,
+  normalizeRoomCode,
+} from "./room-validation.js";
 import type {
   Departure,
   JoinResult,
@@ -10,6 +14,7 @@ import type {
   RoomParticipant,
   RoomSnapshot,
   RoomStatus,
+  RoomTranscriptEntry,
 } from "./room-types.js";
 
 /**
@@ -19,6 +24,23 @@ import type {
  * never claimed expire by the same rule.
  */
 export const EMPTY_ROOM_TTL_MS = 60_000;
+
+/**
+ * Upper bound on retained transcript rows per room. Oldest rows fall off first
+ * so a single long-lived room cannot grow without limit while it is open.
+ */
+export const MAX_TRANSCRIPT_ENTRIES = 500;
+
+/**
+ * What a joining socket may ask for. `language` is the speaking preference;
+ * `listeningLanguage` is optional and defaults per participant when omitted.
+ */
+export type JoinRequest = Omit<
+  RoomParticipant,
+  "id" | "side" | "joinedAt" | "listeningLanguage"
+> & {
+  readonly listeningLanguage?: string | null;
+};
 
 const SEQUENTIAL_SIDES: readonly ParticipantSide[] = ["a", "b"];
 
@@ -74,6 +96,7 @@ export class RoomManager {
       participants: new Map(),
       utteranceSeq: 0,
       usedUtteranceIds: new Set(),
+      transcript: [],
     };
     this.rooms.set(code, room);
     return { ok: true, room };
@@ -83,10 +106,7 @@ export class RoomManager {
    * Create a room and immediately seat the caller as side `a`. This is the
    * socket-level create used by the room screen's create mode.
    */
-  createAndJoin(
-    rawCode: string,
-    joiner: Omit<RoomParticipant, "id" | "side" | "joinedAt">,
-  ): JoinResult {
+  createAndJoin(rawCode: string, joiner: JoinRequest): JoinResult {
     const reservation = this.createRoom(rawCode);
     if (!reservation.ok) return reservation;
     const joined = this.joinRoom(rawCode, joiner);
@@ -103,10 +123,7 @@ export class RoomManager {
    * reservation always yields `a` first), refusing when both are taken.
    * Re-joining a room the socket already belongs to is idempotent.
    */
-  joinRoom(
-    rawCode: string,
-    joiner: Omit<RoomParticipant, "id" | "side" | "joinedAt">,
-  ): JoinResult {
+  joinRoom(rawCode: string, joiner: JoinRequest): JoinResult {
     if (!isRoomCode(rawCode)) {
       return { ok: false, error: errorFor(ErrorCodes.INVALID_CODE) };
     }
@@ -135,11 +152,15 @@ export class RoomManager {
     }
 
     const participant: RoomParticipant = {
-      ...joiner,
       id: randomUUID(),
+      socketId: joiner.socketId,
       side,
-      joinedAt: Date.now(),
+      language: joiner.language,
+      // Only this seat's record is written, so the other participant's stored
+      // preferences always survive a join, rejoin, or preference change.
+      listeningLanguage: joiner.listeningLanguage ?? DEFAULT_LISTENING_LANGUAGE,
       displayName: joiner.displayName || defaultDisplayName(side),
+      joinedAt: Date.now(),
     };
     room.participants.set(side, participant);
     room.emptySince = null;
@@ -214,8 +235,31 @@ export class RoomManager {
         status: "connected" as const,
         displayName: participant.displayName,
         language: participant.language,
+        listeningLanguage: participant.listeningLanguage,
       })),
     };
+  }
+
+  /**
+   * Retain a finalized utterance in the room's transcript history. Interims
+   * never reach this method. Returns the trimmed history slice that was kept.
+   */
+  recordUtterance(room: Room, entry: RoomTranscriptEntry): void {
+    room.transcript.push(entry);
+    if (room.transcript.length > MAX_TRANSCRIPT_ENTRIES) {
+      room.transcript.splice(
+        0,
+        room.transcript.length - MAX_TRANSCRIPT_ENTRIES,
+      );
+    }
+  }
+
+  /**
+   * Transcript history for a room, oldest first. Callers must pass the room a
+   * socket is actually a member of, so history can never leak across rooms.
+   */
+  transcriptOf(room: Room): readonly RoomTranscriptEntry[] {
+    return room.transcript;
   }
 
   /**

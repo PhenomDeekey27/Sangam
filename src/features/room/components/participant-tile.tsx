@@ -62,7 +62,7 @@ export function ParticipantTile({
     <article
       aria-label={
         participant
-          ? `${participant.displayName}, ${languageLabel(participant.language)}, ${badge}`
+          ? `${participant.displayName}, speaks ${languageLabel(participant.language)}, hears ${languageLabel(participant.listeningLanguage)}, ${badge}`
           : "Empty seat, waiting for partner"
       }
       style={
@@ -86,8 +86,13 @@ export function ParticipantTile({
           </p>
           <p className="text-mute text-xs">
             {participant
-              ? `${languageLabel(participant.language)} · ${languageNative(participant.language)}`
+              ? `Speaks ${languageLabel(participant.language)} · ${languageNative(participant.language)}`
               : "Share the room code to invite someone"}
+          </p>
+          <p className="text-mute text-xs">
+            {participant
+              ? `Hears ${languageLabel(participant.listeningLanguage)}`
+              : "\u00a0"}
           </p>
         </div>
 
