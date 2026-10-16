@@ -21,9 +21,21 @@ export type ParticipantStatus = "connecting" | "connected" | "disconnected";
 /**
  * Connection of this client to the real-time room server.
  * Distinct from `RoomStatus`, which describes the room itself.
+ *
+ * Transport and membership are separate: `connected` is reported only after
+ * the server confirms room membership (join/create acknowledgement) and
+ * returns the room snapshot naming this participant's seat. `reconnecting`
+ * means the transport dropped and the client is trying to rejoin;
+ * `expired` means a previously joined room is gone server-side (backend
+ * restart or expiry) and will not come back by retrying the same code.
  */
 export type ConnectionStatus =
-  "connecting" | "connected" | "failed" | "disconnected";
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "expired"
+  | "failed"
+  | "disconnected";
 
 /**
  * Why the room screen is opening: a creator reserves the code through

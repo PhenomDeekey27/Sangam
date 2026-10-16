@@ -135,7 +135,17 @@ export class RoomManager {
         const room = this.rooms.get(code);
         const participant = room && this.findBySocket(room, joiner.socketId);
         if (room && participant) {
-          return { ok: true, room, participant, created: false };
+          // Same socket rejoining the same room (for example after the client
+          // re-sent its preferences): follow the latest stated preferences for
+          // this seat. The other seat is untouched, and identity is stable.
+          const refreshed: RoomParticipant = {
+            ...participant,
+            language: joiner.language,
+            listeningLanguage:
+              joiner.listeningLanguage ?? participant.listeningLanguage,
+          };
+          room.participants.set(existingMembership.side, refreshed);
+          return { ok: true, room, participant: refreshed, created: false };
         }
       }
       // A socket switching rooms must leave the previous one first.

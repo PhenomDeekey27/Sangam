@@ -10,7 +10,10 @@ import {
   getRoomSocket,
   type RoomSocket,
 } from "@/features/room/services/socket";
+import { ROOM_JOIN_TIMEOUT_MS } from "@/features/room/utils/connection";
 import type { LanguageCode } from "@/types";
+import type { RoomOpAck, SocketError } from "@/types/socket";
+import type { RoomMode, SpeakerSide } from "@/features/room/types";
 
 /** How long a turn highlight lingers before seats return to idle. */
 const TURN_RESET_MS = 1400;
@@ -97,4 +100,104 @@ export function createRoomActions(context: RoomActionContext): RoomActions {
   };
 
   return { sendUtterance, emitInterim, interrupt };
+}
+
+/** One participant's preferences for a create/join emit. */
+export interface RoomJoinAttempt {
+  readonly code: string;
+  readonly language: LanguageCode;
+  readonly listeningLanguage: LanguageCode;
+}
+
+/** Side effects of a create/join round trip, owned by the calling hook. */
+export interface RoomJoinEffects {
+  readonly notify: (message: string | null) => void;
+  readonly silence: () => void;
+  readonly onRoomError: (error: SocketError) => void;
+  readonly onJoined: (
+    self: { readonly id: string; readonly side: SpeakerSide },
+    created: boolean,
+  ) => void;
+  /**
+   * The server never answered within the deadline (backend gone mid-join).
+   * The caller should leave `connecting`/`reconnecting` for a retryable
+   * state instead of waiting forever. Late acks after this are ignored.
+   */
+  readonly onTimeout?: () => void;
+}
+
+/** Per-attempt options for a create/join round trip. */
+export interface RoomJoinOptions {
+  /**
+   * Ack deadline per leg in milliseconds. Defaults to
+   * `ROOM_JOIN_TIMEOUT_MS`; the timer never holds the process open.
+   */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Send a `room:create`/`room:join` for one seat. Both preferences ride along,
+ * so the seat the server (re-)creates carries the same languages. When the
+ * invite URL is opened before the creator's screen finishes creating, the
+ * refused create falls back to joining the existing room. Every leg has an
+ * ack deadline so a backend that dies mid-join cannot leave the UI stuck.
+ */
+export function emitRoomJoin(
+  socket: RoomSocket,
+  attempt: RoomMode,
+  join: RoomJoinAttempt,
+  effects: RoomJoinEffects,
+  options?: RoomJoinOptions,
+): void {
+  const payload = {
+    code: join.code,
+    language: join.language,
+    listeningLanguage: join.listeningLanguage,
+  };
+  const timeoutMs = options?.timeoutMs ?? ROOM_JOIN_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let settled = false;
+  const disarm = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  const arm = (onTimeout: () => void): void => {
+    disarm();
+    timer = setTimeout(onTimeout, timeoutMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  };
+  const send = (next: RoomMode): void => {
+    const onResponse = (response: RoomOpAck): void => {
+      if (settled) return;
+      if (
+        next === "create" &&
+        !response.ok &&
+        response.error.code === "room_already_exists"
+      ) {
+        send("join");
+        return;
+      }
+      settled = true;
+      disarm();
+      if (!response.ok) {
+        effects.onRoomError(response.error);
+        effects.silence();
+        return;
+      }
+      effects.onJoined(response.self, next === "create");
+    };
+    arm(() => {
+      if (settled) return;
+      settled = true;
+      effects.onTimeout?.();
+    });
+    if (next === "create") {
+      socket.emit("room:create", payload, onResponse);
+    } else {
+      socket.emit("room:join", payload, onResponse);
+    }
+  };
+  send(attempt);
 }

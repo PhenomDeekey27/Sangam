@@ -55,6 +55,7 @@ function isKnownCode(code: string): boolean {
     "audio_too_large",
     "speech_unavailable",
     "language_mismatch",
+    "language_not_supported",
     "network",
     "not_supported",
   ].includes(code);

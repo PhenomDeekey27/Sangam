@@ -11,6 +11,16 @@ const PRESENTATION: Record<
     tone: "text-mute",
     icon: Loader2,
   },
+  reconnecting: {
+    label: "Reconnecting",
+    tone: "text-mute",
+    icon: Loader2,
+  },
+  expired: {
+    label: "Room ended",
+    tone: "text-danger",
+    icon: CircleAlert,
+  },
   connected: { label: "Live", tone: "text-success", icon: Wifi },
   failed: {
     label: "Connection failed",
@@ -29,7 +39,7 @@ export function ConnectionStatus({
   readonly className?: string;
 }) {
   const { label, tone, icon: Icon } = PRESENTATION[status];
-  const spinning = status === "connecting";
+  const spinning = status === "connecting" || status === "reconnecting";
 
   return (
     <span

@@ -5,9 +5,9 @@
   "type": "module",
   "description": "Socket.IO real-time room server for Sangam. In-memory state: rooms are lost on restart.",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
     "build": "tsc",
-    "start": "node dist/server/src/index.js",
+    "start": "node --env-file-if-exists=.env dist/server/src/index.js",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },

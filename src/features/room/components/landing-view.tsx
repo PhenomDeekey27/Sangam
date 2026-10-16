@@ -20,7 +20,10 @@ import { LanguageSelect } from "@/features/room/components/language-select";
 import { VoiceBridge } from "@/features/room/components/voice-bridge";
 import { createRoomCode } from "@/features/room/utils/room-code";
 import { roomPath } from "@/features/room/utils/room-path";
-import { languageQuery } from "@/features/room/utils/language-preference";
+import {
+  languageQuery,
+  type LanguagePreferences,
+} from "@/features/room/utils/language-preference";
 import {
   DEFAULT_LISTENING_LANGUAGE,
   DEFAULT_SPEAKING_LANGUAGE,
@@ -61,10 +64,15 @@ export function LandingView() {
    * reserves the code through the server before reporting success; guests
    * join an existing room. Both preferences — what I speak and what I want to
    * hear — ride in the URL in the exact form the room route parses, and the
-   * invite link mirrors them for the partner.
+   * invite link mirrors them for the partner. Code joins submit the pair
+   * chosen in the join dialog's pre-join step.
    */
-  function enterRoom(code: RoomCode, create: boolean) {
-    const query = languageQuery({ speaking: spoken, listening: heard });
+  function enterRoom(
+    code: RoomCode,
+    create: boolean,
+    preferences: LanguagePreferences = { speaking: spoken, listening: heard },
+  ) {
+    const query = languageQuery(preferences);
     router.push(`${roomPath(code)}?${query}${create ? "&create=1" : ""}`);
   }
 
@@ -192,13 +200,15 @@ export function LandingView() {
         open={joinOpen}
         onClose={() => setJoinOpen(false)}
         title="Join a conversation"
-        description="Enter the six-character code your partner sent you."
+        description="Enter the six-character code — the room's languages load automatically, then choose yours."
       >
         <JoinCodeForm
+          initialSpeaking={spoken}
+          initialListening={heard}
           onCancel={() => setJoinOpen(false)}
-          onSubmit={(code) => {
+          onSubmit={(code, preferences) => {
             setJoinOpen(false);
-            enterRoom(code, false);
+            enterRoom(code, false, preferences);
           }}
         />
       </Dialog>

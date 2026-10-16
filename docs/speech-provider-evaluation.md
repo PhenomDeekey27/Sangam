@@ -62,7 +62,7 @@ Deepgram is the best fit for a two-person live room:
 - **Self-hosted Whisper/Nemotron** if data must never leave our infrastructure;
   the provider interface exists precisely to make that swap a one-file change.
 
-## How it is wired (and what is not proven)
+## How it is wired (and what is proven)
 
 - `SpeechProvider` (interface) → `mock` / `deepgram` / `none` implementations.
 - `SPEECH_PROVIDER` selects `auto | deepgram | mock | none`; `auto` uses
@@ -71,12 +71,23 @@ Deepgram is the best fit for a two-person live room:
   Socket.IO connection (`speech:start` / `speech:audio` / `speech:stop`); the
   server relays interim lines and writes finals into the normal room transcript.
 
-**Unverified:** no `DEEPGRAM_API_KEY` was available, so the Deepgram adapter is
-covered only by a fake-socket unit test. The request URL, subprotocol auth, and
-response parsing follow Deepgram's documented protocol but have **not** been
-exercised against the live service with a real microphone. Until then, treat
-live Deepgram recognition as incomplete, and use `SPEECH_PROVIDER=mock` for
-demos or leave the default (`auto`, with no key → browser fallback).
+**Verified live (October 2026, Stage 4.3):**
+
+- WebSocket handshake against `wss://api.deepgram.com/v1/listen` with the
+  `token` subprotocol, `model=nova-3`, `language=en`, `interim_results`,
+  `smart_format` — accepted, clean close.
+- Full loop through the running Sangam server with real English speech audio
+  in a browser-identical container (WebM/Opus, streamed as paced Socket.IO
+  chunks): 5 interim lines and 3 final segments, transcribed correctly.
+- The adapter buffers audio that arrives during the upstream handshake and
+  flushes it in order on open (found by the live test: sending before `open`
+  used to kill the session).
+- Handshake failures report `provider_auth` (not retryable); mid-stream drops
+  and unexpected closes report `provider_network` (retryable, no auto-retry).
+
+**Still unverified:** Tamil, Telugu, and Hindi recognition against real audio
+in those languages; real-microphone capture (`MediaRecorder` in Chrome/Brave/
+Firefox) as opposed to file streaming; per-room/per-IP rate limits.
 
 ## Required configuration to finish the integration
 
@@ -90,10 +101,12 @@ demos or leave the default (`auto`, with no key → browser fallback).
 
 ### Remaining work before claiming production speech
 
-1. Set a real `DEEPGRAM_API_KEY` and verify Tamil/Telugu/Hindi/English against a
-   live microphone in Chrome, Brave, and Firefox.
-2. Confirm Deepgram's streaming container support for the browser's chosen
-   `MediaRecorder` codec (Opus/WebM) — or add a transcoding step.
+1. Verify Tamil/Telugu/Hindi against live audio in those languages, and a real
+   microphone in Chrome, Brave, and Firefox (file streaming is proven; device
+   capture is not).
+2. ~~Confirm Deepgram's streaming container support for the browser's chosen
+   `MediaRecorder` codec (Opus/WebM) — or add a transcoding step.~~ Done:
+   WebM/Opus streams without `encoding`/`sample_rate` (container auto-detect).
 3. Add server-side rate limiting/quotas per room and per IP.
 4. Decide the retention policy for audio (currently never persisted; only
    transcripts are kept in memory).

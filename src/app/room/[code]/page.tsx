@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { RoomView } from "@/features/room/components/room-view";
-import { readLanguagePreferences } from "@/features/room/utils/language-preference";
+import {
+  hasLanguageParams,
+  readLanguagePreferences,
+} from "@/features/room/utils/language-preference";
 import { isRoomCode, normalizeRoomCode } from "@/features/room/utils/room-code";
 import type { RoomMode } from "@/features/room/types";
 
@@ -27,7 +30,10 @@ function pickMode(value: string | string[] | undefined): RoomMode {
  * Both language preferences are read here — `speak` (this participant's own
  * language) and `hear` (what they want to hear) — and validated against the
  * supported list. A supported selection is always preserved; defaults apply
- * only when the parameter is missing or invalid.
+ * only when the parameter is missing or invalid. A bare `/room/CODE` URL
+ * with neither parameter (code-only join, no invite link) flags a pre-join
+ * language choice instead of joining silently with defaults; invite links
+ * always carry both parameters and join directly.
  */
 export default function RoomPage({
   params,
@@ -57,6 +63,7 @@ async function RoomContent({
       code={normalizeRoomCode(code)}
       mode={pickMode(query.create)}
       preferences={readLanguagePreferences(query)}
+      requiresLanguageChoice={!hasLanguageParams(query)}
     />
   );
 }

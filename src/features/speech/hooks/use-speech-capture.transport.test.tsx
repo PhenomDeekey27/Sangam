@@ -26,6 +26,12 @@ const serverCapabilities: SpeechCapabilities = {
   interim: true,
   languages: ["ta", "te", "hi", "en"],
 };
+const deepgramCapabilities: SpeechCapabilities = {
+  provider: "deepgram",
+  streaming: true,
+  interim: true,
+  languages: ["ta", "te", "hi", "en"],
+};
 
 describe("selectTransport", () => {
   it("prefers the server pipeline in auto mode", () => {
@@ -157,6 +163,16 @@ describe("useSpeechCapture transport selection", () => {
   it("uses the server pipeline when a provider is advertised", async () => {
     installMicSupport();
     setSpeechCapabilities(serverCapabilities);
+
+    const harness = await mount();
+
+    assert.equal(harness.current().transport, "server");
+    assert.equal(harness.current().support, "supported");
+  });
+
+  it("selects the server pipeline for a deepgram advertisement", async () => {
+    installMicSupport();
+    setSpeechCapabilities(deepgramCapabilities);
 
     const harness = await mount();
 

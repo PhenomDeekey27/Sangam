@@ -136,6 +136,36 @@ describe("SpeechSessions lifecycle and limits", () => {
     assert.equal(result.ok, false);
     assert.equal(result.ok === false && result.error.code, "not_in_room");
   });
+
+  it("refuses a seat language the provider does not support", () => {
+    const rooms = new RoomManager();
+    rooms.createAndJoin("WXYZ23", {
+      socketId: "sock-es",
+      language: "es",
+      displayName: "",
+    });
+    const io = { to: () => ({ emit: () => {} }) } as unknown as AppServer;
+    const scripted = scriptedProvider();
+    const sessions = new SpeechSessions(
+      io,
+      rooms,
+      resolveSpeechEnv({ provider: "mock" }),
+      scripted.provider,
+    );
+    const socket = {
+      id: "sock-es",
+      emit: () => {},
+      to: () => ({ emit: () => {} }),
+    } as unknown as AppSocket;
+    // Spanish is a valid seat language but outside this provider's list.
+    const result = sessions.start(socket, { language: "es" });
+    assert.equal(result.ok, false);
+    assert.equal(
+      result.ok === false && result.error.code,
+      "language_not_supported",
+    );
+    assert.equal(scripted.sessions.length, 0);
+  });
 });
 
 describe("SpeechSessions transcripts", () => {

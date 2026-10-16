@@ -138,6 +138,19 @@ export class SpeechSessions {
         },
       };
     }
+    if (
+      this.provider.languages.length > 0 &&
+      !this.provider.languages.includes(normalizeLanguage(request.language))
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "language_not_supported",
+          message:
+            "The server speech provider does not support this speaking language — type your message instead.",
+        },
+      };
+    }
     if (!isAllowedMimeType(request.mimeType)) {
       return {
         ok: false,

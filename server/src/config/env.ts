@@ -68,7 +68,7 @@ export function resolveSpeechEnv(input: SpeechEnvInput = {}): SpeechEnv {
   const deepgramApiKey = key && key.length > 0 ? key : null;
   if (mode === "deepgram" && !deepgramApiKey) {
     throw new Error(
-      "SPEECH_PROVIDER=deepgram requires DEEPGRAM_API_KEY to be set",
+      "SPEECH_PROVIDER=deepgram requires DEEPGRAM_API_KEY to be set in server/.env (see .env.example)",
     );
   }
   const provider: SpeechProviderId =

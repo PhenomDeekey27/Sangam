@@ -16,6 +16,18 @@ async function main(): Promise<void> {
   console.log(
     `[sangam] listening on port ${env.port}; CORS origins: ${env.clientOrigins.join(", ")}`,
   );
+  // Safe startup summary: the provider id and whether a key is configured,
+  // never the key itself. Operators seeing `none` here know the frontend will
+  // fall back to browser recognition or typed messages.
+  const speech = server.speechEnv;
+  console.log(
+    `[sangam] speech provider: ${speech.provider} (key configured: ${speech.deepgramApiKey ? "yes" : "no"}; model: ${speech.deepgramModel})`,
+  );
+  if (speech.provider === "none") {
+    console.log(
+      "[sangam] no server speech provider configured — clients use browser recognition or typed messages",
+    );
+  }
   console.log(
     "[sangam] in-memory rooms: state is lost on restart and not shared across instances",
   );

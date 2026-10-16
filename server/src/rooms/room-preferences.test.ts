@@ -79,11 +79,27 @@ describe("language preferences are stored per participant", () => {
       ],
     );
 
-    // The creator's record is the same object it always was.
-    const creator = expectOk(rooms.joinRoom("EFGH23", joiner("socket-a")));
-    assert.equal(creator.participant.id, first.participant.id);
-    assert.equal(creator.participant.language, "hi");
-    assert.equal(creator.participant.listeningLanguage, "ta");
+    // The same socket rejoining the same room follows its latest stated
+    // preferences (a reconnect or a same-tab invite-link paste re-sends them),
+    // while the other seat is untouched and identity is stable.
+    const rejoined = expectOk(rooms.joinRoom("EFGH23", joiner("socket-a")));
+    assert.equal(rejoined.participant.id, first.participant.id);
+    assert.equal(rejoined.participant.side, "a");
+    assert.equal(rejoined.participant.language, "en");
+    assert.equal(rejoined.participant.listeningLanguage, "ta");
+
+    const snapshotAfter = rooms.snapshot(second.room);
+    assert.deepEqual(
+      snapshotAfter.participants.map((p) => [
+        p.side,
+        p.language,
+        p.listeningLanguage,
+      ]),
+      [
+        ["a", "en", "ta"],
+        ["b", "ta", "hi"],
+      ],
+    );
   });
 
   it("replaces only the rejoining seat when preferences change", () => {

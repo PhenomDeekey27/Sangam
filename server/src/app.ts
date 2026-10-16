@@ -9,6 +9,7 @@ import {
   type SpeechEnv,
 } from "./config/env.js";
 import { RoomManager } from "./rooms/room-manager.js";
+import { lookupRoomForJoin } from "./rooms/room-lookup.js";
 import { SpeechSessions } from "./speech/speech-sessions.js";
 import type {
   ClientToServerEvents,
@@ -49,6 +50,28 @@ export function createSangamServer(env: ServerEnv = loadEnv()): SangamServer {
   app.use(cors({ origin: [...env.clientOrigins] }));
   app.get("/health", (_request, response) => {
     response.json({ ok: true, rooms: rooms.roomCount });
+  });
+  /*
+   * Code-only join lookup: the join dialog pastes just the room code, so it
+   * asks here for the creator's stored preferences and mirrors them for the
+   * guest. Only two language codes and a seat count leave the server — the
+   * same data an invite link already carries publicly. The join itself still
+   * goes through the validated `room:join` socket contract, which remains
+   * the authority on membership.
+   */
+  app.get("/api/rooms/:code", (request, response) => {
+    const result = lookupRoomForJoin(rooms, request.params.code);
+    if (!result.ok) {
+      response.status(result.status).json({ ok: false, error: result.error });
+      return;
+    }
+    response.json({
+      ok: true,
+      code: result.code,
+      language: result.language,
+      listeningLanguage: result.listeningLanguage,
+      seatsTaken: result.seatsTaken,
+    });
   });
 
   const httpServer = createServer(app);

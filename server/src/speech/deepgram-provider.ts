@@ -1,14 +1,19 @@
 /**
  * Deepgram streaming adapter (recommended provider).
  *
- * ⚠️ NOT VERIFIED AGAINST THE LIVE SERVICE. No `DEEPGRAM_API_KEY` was available
- * when this was written, so the request URL, auth subprotocol, and response
- * parsing are implemented from Deepgram's documented streaming protocol and
- * covered only by a fake-socket unit test. Treat live recognition as
- * incomplete until it has been exercised with a real key and microphone.
- *
  * The API key stays on the server. The browser is never given a token; it
  * streams captured audio to our own Socket.IO server, which forwards it here.
+ *
+ * Protocol notes (verified against Deepgram's published docs and a live
+ * handshake; see docs/speech-provider-evaluation.md for what was exercised):
+ * - endpoint `wss://api.deepgram.com/v1/listen`, auth as the `token` WebSocket
+ *   subprotocol (browsers cannot set the `Authorization` header, and the same
+ *   subprotocol works from Node).
+ * - `model` (default `nova-3`), per-session `language`, `interim_results`,
+ *   `smart_format`; containerized browser audio (webm/opus, mp4) needs no
+ *   `encoding`/`sample_rate` because Deepgram reads the container header.
+ * - responses shaped `{ type: "Results", is_final, channel: { alternatives:
+ *   [{ transcript }] } }`; a session flushes with `{"type":"CloseStream"}`.
  */
 import type {
   SpeechProvider,
@@ -17,8 +22,29 @@ import type {
   SpeechProviderSession,
 } from "./provider.js";
 
-/** Languages Deepgram's current Nova models document for streaming. */
-export const DEEPGRAM_LANGUAGES = ["en", "hi", "ta", "te"] as const;
+/**
+ * Languages this adapter accepts, per Deepgram's nova-3 streaming list
+ * intersected with Sangam's own supported codes. Seats speaking anything else
+ * (currently Marathi, Kannada, Malayalam) are refused up front with a clear
+ * error instead of opening a doomed upstream socket.
+ */
+export const DEEPGRAM_LANGUAGES = [
+  "en",
+  "hi",
+  "ta",
+  "te",
+  "bn",
+  "gu",
+  "pa",
+  "es",
+  "fr",
+  "de",
+  "pt",
+  "ar",
+  "ja",
+  "ko",
+  "zh",
+] as const;
 
 export const DEEPGRAM_DEFAULT_MODEL = "nova-3";
 const DEEPGRAM_WS_HOST = "wss://api.deepgram.com/v1/listen";
@@ -137,7 +163,15 @@ function createDeepgramSession(
 ): SpeechProviderSession {
   let socket: DeepgramSocket | null = null;
   let closed = false;
+  let opened = false;
+  let stopping = false;
   let reported = false;
+  // Audio that arrives during the upstream handshake. The session ack is
+  // synchronous by design, so the first chunks of a turn always land here;
+  // they are flushed in order once the socket opens.
+  const pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  const MAX_PENDING_BYTES = 4_000_000;
 
   const report = (error: SpeechProviderError): void => {
     if (closed || reported) return;
@@ -158,7 +192,20 @@ function createDeepgramSession(
   }
 
   const live = socket;
-  live.onopen = () => {};
+  live.onopen = () => {
+    opened = true;
+    for (const chunk of pending) {
+      if (closed) break;
+      try {
+        live.send(chunk);
+      } catch {
+        report(networkFailure);
+        break;
+      }
+    }
+    pending.length = 0;
+    pendingBytes = 0;
+  };
   live.onmessage = (event) => {
     if (closed) return;
     const parsed = readTranscript(event.data);
@@ -166,15 +213,29 @@ function createDeepgramSession(
     if (parsed.isFinal) listeners.onFinal(parsed.text);
     else listeners.onInterim(parsed.text);
   };
-  live.onerror = () => report(authFailure);
+  // A handshake failure (bad key, unreachable host) fires before `open`, so
+  // it is an auth/startup problem; anything after a successful open is a
+  // dropped connection the user may retry by toggling the microphone.
+  live.onerror = () => report(opened ? networkFailure : authFailure);
   live.onclose = () => {
-    if (closed) return;
-    listeners.onClose();
+    // Our own close, or the close that answers a graceful stop, is expected.
+    // Any other upstream close leaves a dead microphone: surface it once.
+    if (closed || stopping) return;
+    report(networkFailure);
   };
 
   return {
     push(chunk) {
       if (closed) return;
+      if (!opened) {
+        if (pendingBytes + chunk.byteLength > MAX_PENDING_BYTES) {
+          report(networkFailure);
+          return;
+        }
+        pending.push(chunk);
+        pendingBytes += chunk.byteLength;
+        return;
+      }
       try {
         live.send(chunk);
       } catch {
@@ -183,6 +244,7 @@ function createDeepgramSession(
     },
     stop() {
       if (closed) return;
+      stopping = true;
       try {
         // Deepgram finalizes buffered audio when the stream is closed.
         live.send(JSON.stringify({ type: "CloseStream" }));

@@ -99,6 +99,28 @@ export function roomInvitePath(
   return `${roomPath(code)}?${languageQuery(partnerPreferences(preferences))}`;
 }
 
+/** A raw query value carries a usable language parameter. */
+function hasLanguageValue(value: LanguageParam): boolean {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return typeof candidate === "string" && candidate.trim().length > 0;
+}
+
+/**
+ * True when a room URL carries both language parameters. A bare
+ * `/room/CODE` URL (code-only join, no invite link) returns false so the
+ * room screen can offer an explicit pre-join language choice instead of
+ * silently joining with defaults. Validity is checked separately — this
+ * only reports presence.
+ */
+export function hasLanguageParams(
+  query: Readonly<Record<string, LanguageParam>>,
+): boolean {
+  return (
+    hasLanguageValue(query[SPEAKING_PARAM]) &&
+    hasLanguageValue(query[LISTENING_PARAM])
+  );
+}
+
 /** Preferences from a raw room URL, with both halves validated. */
 export function preferencesFromSearch(search: string): LanguagePreferences {
   return readLanguagePreferences(
