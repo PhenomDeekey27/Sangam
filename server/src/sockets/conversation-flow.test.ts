@@ -143,14 +143,14 @@ describe("interrupt and overlapping-speech relays", () => {
     creator.on("conversation:interrupt", (payload) => received.push(payload));
 
     // Two emits in rapid succession: only the first may pass the gate.
-    joiner.emit("conversation:interrupt");
-    joiner.emit("conversation:interrupt");
+    joiner.emit("conversation:interrupt", { interruptId: "int-pass-1" });
+    joiner.emit("conversation:interrupt", { interruptId: "int-pass-2" });
     await delay(150);
     assert.equal(received.length, 1);
 
     // Once the window has fully elapsed, a deliberate re-interruption fires.
     await delay(INTERRUPT_COOLDOWN_MS + 100);
-    joiner.emit("conversation:interrupt");
+    joiner.emit("conversation:interrupt", { interruptId: "int-pass-3" });
     await delay(150);
     assert.equal(received.length, 2);
 
@@ -226,7 +226,7 @@ describe("interrupt and overlapping-speech relays", () => {
     const boundary = new Promise<{ side: string; sequence: number }>((resolve) =>
       joiner.once("conversation:interrupt", (payload) => resolve(payload)),
     );
-    creator.emit("conversation:interrupt");
+    creator.emit("conversation:interrupt", { interruptId: "int-bnd-1" });
     const interrupt = await boundary;
     assert.equal(interrupt.side, "a");
     assert.equal(interrupt.sequence, utterance.sequence);
@@ -252,7 +252,7 @@ describe("interrupt and overlapping-speech relays", () => {
     const interruptSeen = new Promise<void>((resolve) =>
       joiner.once("conversation:interrupt", () => resolve()),
     );
-    creator.emit("conversation:interrupt");
+    creator.emit("conversation:interrupt", { interruptId: "int-keep-1" });
     await interruptSeen;
 
     // A rejoining seat still receives the original row: an interruption

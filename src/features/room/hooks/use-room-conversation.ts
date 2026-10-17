@@ -20,8 +20,14 @@ import {
   toFlow,
   toSpeakerStates,
 } from "@/features/room/utils/derive";
+import type { ActivePlayback } from "@/features/room/utils/identity";
+import {
+  isInterruptPending,
+  type InterruptState,
+} from "@/features/room/utils/interrupt-state";
 import { useSpeechCapture } from "@/features/speech/hooks/use-speech-capture";
 import { usePlaybackQueue } from "@/features/playback/hooks/use-playback-queue";
+import { recordPlaybackStart } from "@/features/conversation/utils/latency";
 import type {
   MicPermission,
   PlaybackState,
@@ -63,6 +69,12 @@ export interface RoomConversation {
   readonly speakerStates: Record<SpeakerSide, SpeakerState>;
   readonly capturing: boolean;
   readonly playback: PlaybackState;
+  /** The translated-audio turn playing now, attributed to its source seat. */
+  readonly nowPlaying: ActivePlayback | null;
+  /** Interrupt is meaningful only with a seated partner and a live socket. */
+  readonly canInterrupt: boolean;
+  /** Requester-side interruption progress for the control's label/state. */
+  readonly interruptState: InterruptState;
   readonly entries: readonly TranscriptEntry[];
   /** Live, replaceable interim lines per side for the transcript. */
   readonly interims: Readonly<Partial<Record<SpeakerSide, InterimUtterance>>>;
@@ -104,7 +116,10 @@ export function useRoomConversation({
   // Translated-speech playback (Stage 6): the server synthesizes each
   // completed translation for this listener; the queue plays in message
   // order, and `stop` is ready for Stage-7 cancellation.
-  const playbackQueue = usePlaybackQueue({ onNotice: notify });
+  const playbackQueue = usePlaybackQueue({
+    onNotice: notify,
+    onPlaybackStart: recordPlaybackStart,
+  });
   // The stable sinks go straight to the socket subscription: enqueue for new
   // deliveries, interrupt for a remote interruption's boundary, reset for a
   // disconnect/leave so the next room starts clean.
@@ -123,6 +138,7 @@ export function useRoomConversation({
     partnerInterim,
     youState,
     partnerState,
+    interruptState,
     retryConnection,
     sendUtterance,
     emitInterim,
@@ -188,6 +204,22 @@ export function useRoomConversation({
       : youState;
   const activeSpeaker = toActiveSpeaker(seats, effectiveYouState, partnerState);
 
+  // Attribute the audio currently playing to the seat that spoke it. The
+  // pairing only exists in stored data (the transcript row), so an unknown id
+  // contributes no label rather than a guessed one.
+  const nowPlaying = useMemo<ActivePlayback | null>(() => {
+    const active = playbackQueue.nowPlaying;
+    if (!active) return null;
+    const entry = entries.find(
+      (row) => row.utterance.id === active.utteranceId,
+    );
+    if (!entry) return null;
+    return {
+      speakerSide: entry.utterance.speakerSide,
+      language: active.language,
+    };
+  }, [entries, playbackQueue.nowPlaying]);
+
   const interims = useMemo(() => {
     const map: Partial<Record<SpeakerSide, InterimUtterance>> = {};
     if (seats.you && capture.interim.trim().length > 0) {
@@ -221,6 +253,13 @@ export function useRoomConversation({
     ),
     capturing: capture.capturing,
     playback: playbackQueue.state,
+    nowPlaying,
+    canInterrupt:
+      connection === "connected" &&
+      seats.you !== null &&
+      partnerPresent &&
+      !isInterruptPending(interruptState),
+    interruptState,
     entries,
     interims,
     notice,

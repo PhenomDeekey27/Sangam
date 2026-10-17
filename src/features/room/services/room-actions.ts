@@ -4,7 +4,6 @@
  * interrupt) read as one small policy surface: nothing is emitted unless this
  * client is a confirmed member of a connected socket.
  */
-import type { SpeakerState } from "@/features/conversation/types";
 import { newUtteranceId } from "@/features/conversation/utils/utterance-id";
 import {
   getRoomSocket,
@@ -12,11 +11,8 @@ import {
 } from "@/features/room/services/socket";
 import { ROOM_JOIN_TIMEOUT_MS } from "@/features/room/utils/connection";
 import type { LanguageCode } from "@/types";
-import type { RoomOpAck, SocketError } from "@/types/socket";
+import type { InterruptAck, RoomOpAck, SocketError } from "@/types/socket";
 import type { RoomMode, SpeakerSide } from "@/features/room/types";
-
-/** How long a turn highlight lingers before seats return to idle. */
-const TURN_RESET_MS = 1400;
 
 /** Everything the actions need; the caller rebuilds them when it changes. */
 export interface RoomActionContext {
@@ -26,11 +22,14 @@ export interface RoomActionContext {
   /** Whether the partner is currently in the room. */
   readonly partnerPresent: boolean;
   readonly notify: (message: string | null) => void;
-  readonly setSelfState: (state: SpeakerState) => void;
-  readonly setPartnerState: (state: SpeakerState) => void;
-  /** Cancel pending turn timers before starting a new turn. */
-  readonly clearTimers: () => void;
-  readonly schedule: (callback: () => void, ms: number) => void;
+}
+
+/** Callbacks the caller supplies for one interruption request. */
+export interface InterruptRequestHandlers {
+  /** Fires the instant the request is emitted, before any server reply. */
+  readonly onRequested: (interruptId: string) => void;
+  /** Resolves the request with the server's ack. */
+  readonly onAck: (response: InterruptAck, interruptId: string) => void;
 }
 
 export interface RoomActions {
@@ -38,7 +37,12 @@ export interface RoomActions {
   readonly sendUtterance: (text: string, source: "typed" | "speech") => void;
   /** Send the current interim line; empty text clears the partner's view. */
   readonly emitInterim: (text: string) => void;
-  readonly interrupt: () => void;
+  /**
+   * Ask the server to interrupt the partner. Returns silently unless this
+   * client is a seated member of a connected socket; the identifier and ack
+   * are surfaced to the caller through `handlers`.
+   */
+  readonly interrupt: (handlers: InterruptRequestHandlers) => void;
 }
 
 export function createRoomActions(context: RoomActionContext): RoomActions {
@@ -81,22 +85,19 @@ export function createRoomActions(context: RoomActionContext): RoomActions {
     });
   };
 
-  const interrupt = (): void => {
+  /**
+   * Ask the server to interrupt the partner. The click only arms a request:
+   * the requester's UI must wait for the partner's confirmation before it
+   * claims any playback was stopped, and it must never touch its own audio.
+   */
+  const interrupt = (handlers: InterruptRequestHandlers): void => {
     const socket = memberSocket();
     if (!socket) return;
-    socket.emit("conversation:interrupt");
-    context.clearTimers();
-    context.setSelfState("speaking");
-    context.setPartnerState("interrupted");
-    context.notify(
-      context.partnerPresent
-        ? "You interrupted your partner."
-        : "Interrupted — nobody else is in the room right now.",
-    );
-    context.schedule(() => {
-      context.setSelfState("idle");
-      context.setPartnerState("idle");
-    }, TURN_RESET_MS);
+    const interruptId = newUtteranceId();
+    handlers.onRequested(interruptId);
+    socket.emit("conversation:interrupt", { interruptId }, (response) => {
+      handlers.onAck(response, interruptId);
+    });
   };
 
   return { sendUtterance, emitInterim, interrupt };

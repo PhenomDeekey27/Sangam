@@ -29,6 +29,7 @@ import {
   seatsFromSnapshot,
   type SeatAssignment,
 } from "@/features/room/utils/derive";
+import { useInterruptRequester } from "@/features/room/hooks/use-interrupt-requester";
 import type { SocketError } from "@/types/socket";
 import { useTimerQueue } from "@/hooks/use-timer-queue";
 import {
@@ -77,6 +78,7 @@ export function useRoomSocket({
 
   const selfRef = useRef<SelfIdentity | null>(null);
   const seatsRef = useRef<SeatAssignment>(seats);
+  const partnerNameRef = useRef<string | null>(null);
   const pendingSnapshotRef = useRef<readonly ParticipantProfile[] | null>(null);
   const notifyRef = useRef(notify);
   const silenceRef = useRef(onSilence);
@@ -95,6 +97,7 @@ export function useRoomSocket({
   // render so reconnects and rejoins never replay stale values.
   useEffect(() => {
     seatsRef.current = seats;
+    partnerNameRef.current = seats.partner?.displayName ?? null;
     notifyRef.current = notify;
     silenceRef.current = onSilence;
     playbackRef.current = onPlayback;
@@ -190,6 +193,30 @@ export function useRoomSocket({
     [code, language, listeningLanguage],
   );
 
+  // Send paths live in one small policy module. `selfId` comes from the seat
+  // the server assigned us, so an emit is only attempted once we are seated.
+  const selfId = seats.you?.id ?? null;
+  const partnerPresent = seats.partner !== null;
+  const actions = useMemo(
+    () =>
+      createRoomActions({
+        language,
+        selfId,
+        partnerPresent,
+        notify,
+      }),
+    [language, notify, partnerPresent, selfId],
+  );
+
+  // The requester-side interruption state machine lives in its own hook; it
+  // emits through the shared send paths and reports the phase for the button.
+  const requester = useInterruptRequester({
+    sendRequest: actions.interrupt,
+    notify,
+    setPartnerState,
+    schedule,
+  });
+
   useEffect(() => {
     return subscribeRoomSocket({
       socket: getRoomSocket(),
@@ -209,6 +236,9 @@ export function useRoomSocket({
       playbackInterruptRef,
       playbackResetRef,
       selfRef,
+      partnerNameRef,
+      onInterruptConfirmed: requester.confirm,
+      onInterruptDisconnected: requester.disconnect,
       pendingSnapshotRef,
       wasMemberRef,
       setSeats,
@@ -230,27 +260,10 @@ export function useRoomSocket({
     enterRoom,
     mode,
     partnerActivity,
+    requester.confirm,
+    requester.disconnect,
     schedule,
   ]);
-
-  // Send paths live in one small policy module. `selfId` comes from the seat
-  // the server assigned us, so an emit is only attempted once we are seated.
-  const selfId = seats.you?.id ?? null;
-  const partnerPresent = seats.partner !== null;
-  const actions = useMemo(
-    () =>
-      createRoomActions({
-        language,
-        selfId,
-        partnerPresent,
-        notify,
-        setSelfState: setYouState,
-        setPartnerState,
-        clearTimers,
-        schedule,
-      }),
-    [clearTimers, language, notify, partnerPresent, schedule, selfId],
-  );
 
   const retryConnection = useCallback(() => {
     const socket = getRoomSocket();
@@ -275,7 +288,10 @@ export function useRoomSocket({
     partnerInterim,
     youState,
     partnerState,
+    interruptState: requester.state,
     retryConnection,
-    ...actions,
+    sendUtterance: actions.sendUtterance,
+    emitInterim: actions.emitInterim,
+    interrupt: requester.request,
   };
 }

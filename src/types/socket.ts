@@ -49,6 +49,28 @@ export type SpeechStartAck =
   | { readonly ok: false; readonly error: SocketError };
 
 /**
+ * Client-generated correlation id for one interruption request. The server
+ * echoes it on the ack and on the partner's confirmation, so a late reply
+ * from an earlier attempt can never settle a newer one.
+ */
+export interface InterruptRequest {
+  readonly interruptId: string;
+}
+
+/**
+ * Reply to `conversation:interrupt`. `relayed` reports whether the request
+ * actually reached a partner; it does **not** mean the partner has cancelled
+ * their playback yet — that arrives later as `conversation:interrupt_confirmed`.
+ */
+export type InterruptAck =
+  | {
+      readonly ok: true;
+      readonly interruptId: string;
+      readonly relayed: boolean;
+    }
+  | { readonly ok: false; readonly error: SocketError };
+
+/**
  * Reply to a `room:create` / `room:join` acknowledgement. Membership problems
  * (unknown room, full room, malformed code) arrive here rather than as a
  * fire-and-forget `error` event, so the caller always learns the outcome.
@@ -122,7 +144,19 @@ export interface ClientToServerEvents {
     readonly text: string;
     readonly language: LanguageCode;
   }) => void;
-  "conversation:interrupt": () => void;
+  "conversation:interrupt": (
+    payload: InterruptRequest,
+    ack?: (response: InterruptAck) => void,
+  ) => void;
+  /**
+   * Sent by the interrupted partner once its own playback actually stopped and
+   * the stale turn was discarded. The server routes it to the requester as
+   * `conversation:interrupt_confirmed`; the requester's UI must not claim the
+   * cancellation until this arrives.
+   */
+  "conversation:interrupt_ack": (payload: {
+    readonly interruptId: string;
+  }) => void;
   /**
    * Open a server-side recognition session for this socket's seat. The server
    * ignores any language that does not match the seat's stored speaking
@@ -210,6 +244,17 @@ export interface ServerToClientEvents {
   "conversation:interrupt": (payload: {
     readonly side: SpeakerSide;
     readonly sequence: number;
+    /** Echoes the requester's correlation id for the confirmation round trip. */
+    readonly interruptId: string;
+  }) => void;
+  /**
+   * Sent to the requester when the interrupted partner confirmed that its
+   * playback stopped. `side` is the confirming (interrupted) participant, so
+   * the requester can name whoever actually cancelled.
+   */
+  "conversation:interrupt_confirmed": (payload: {
+    readonly side: SpeakerSide;
+    readonly interruptId: string;
   }) => void;
   /**
    * Playable audio for one completed translation, delivered only to the

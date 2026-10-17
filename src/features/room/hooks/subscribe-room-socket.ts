@@ -19,6 +19,10 @@ import {
 } from "@/features/room/services/socket";
 import { setSpeechCapabilities } from "@/features/speech/services/speech-capabilities";
 import { parseTranslationUpdate } from "@/features/conversation/utils/translation-payload";
+import {
+  markLatency,
+  markUtteranceReceived,
+} from "@/features/conversation/utils/latency";
 import { parsePlaybackPayload } from "@/features/playback/services/playback-payload";
 import type { TranslationState } from "@/features/translation/types";
 import { readWasMember } from "@/features/room/utils/connection";
@@ -34,10 +38,9 @@ import type { SelfIdentity } from "./use-room-socket-types";
 export const SPEAKING_RESET_MS = 1400;
 
 /**
- * Normalize a server-stamped interruption boundary at the socket boundary. A
- * missing or malformed value degrades to `0`, which stops the active audio
- * without discarding anything (the safe direction), so a bad frame can never
- * drop legitimate queued speech.
+ * Normalize a server-stamped interruption boundary. A missing or malformed
+ * value degrades to `0` (stop the active audio, discard nothing), so a bad
+ * frame can never drop legitimate queued speech.
  */
 export function interruptBoundary(sequence: unknown): number {
   if (typeof sequence !== "number" || !Number.isFinite(sequence)) return 0;
@@ -74,6 +77,12 @@ export interface RoomSubscriptionContext {
   /** Stage-7 teardown sink: stop and forget all playback (disconnect/leave). */
   readonly playbackResetRef: RefObject<() => void>;
   readonly selfRef: RefObject<SelfIdentity | null>;
+  /** Display name of the other seat, for naming who interrupted (or `null`). */
+  readonly partnerNameRef: RefObject<string | null>;
+  /** The partner confirmed our interruption request actually stopped audio. */
+  readonly onInterruptConfirmed: (interruptId: string) => void;
+  /** The transport dropped while an interruption was still unconfirmed. */
+  readonly onInterruptDisconnected: () => void;
   readonly pendingSnapshotRef: RefObject<readonly ParticipantProfile[] | null>;
   readonly wasMemberRef: RefObject<boolean>;
   readonly setSeats: Dispatch<SetStateAction<SeatAssignment>>;
@@ -112,6 +121,9 @@ export function subscribeRoomSocket(
     playbackInterruptRef,
     playbackResetRef,
     selfRef,
+    partnerNameRef,
+    onInterruptConfirmed,
+    onInterruptDisconnected,
     pendingSnapshotRef,
     wasMemberRef,
     setSeats,
@@ -162,6 +174,8 @@ export function subscribeRoomSocket(
     if (!applyUtterance(payload.entry)) return;
     const self = selfRef.current;
     if (self && payload.entry.utterance.speakerSide === self.side) return;
+    // Dev-only: mark where the partner's finalized line entered this client.
+    markUtteranceReceived(payload.entry);
     setPartnerInterim(null);
     partnerActivity();
   };
@@ -171,6 +185,7 @@ export function subscribeRoomSocket(
     const update = parseTranslationUpdate(payload);
     if (!update) return;
     applyTranslation(update.utteranceId, update.translation);
+    markLatency(update.utteranceId, "translation");
   };
 
   const onHistory = (payload: {
@@ -205,6 +220,7 @@ export function subscribeRoomSocket(
   const onInterrupt = (payload: {
     readonly side: SpeakerSide;
     readonly sequence?: unknown;
+    readonly interruptId?: unknown;
   }) => {
     // A participant's own interruption signal never arrives here in practice
     // (the server relays it only to the partner), and must never stop their
@@ -216,13 +232,29 @@ export function subscribeRoomSocket(
     clearTimers();
     setYouState("interrupted");
     setPartnerState("speaking");
+    const interrupter = partnerNameRef.current ?? "Your partner";
     notifyRef.current(
-      "Your partner interrupted — their words stay in the transcript.",
+      `${interrupter} interrupted — their new words will play next.`,
     );
+    // Confirm back to the server that this device really stopped the turn, so
+    // the requester can distinguish "request delivered" from "cancellation
+    // confirmed" instead of claiming a stop from its own click.
+    if (typeof payload.interruptId === "string" && payload.interruptId.length > 0) {
+      socket.emit("conversation:interrupt_ack", {
+        interruptId: payload.interruptId,
+      });
+    }
     schedule(() => {
       setYouState("idle");
       setPartnerState("idle");
     }, SPEAKING_RESET_MS);
+  };
+
+  const handleInterruptConfirmed = (payload: {
+    readonly side: SpeakerSide;
+    readonly interruptId: string;
+  }) => {
+    onInterruptConfirmed(payload.interruptId);
   };
 
   const onErrorEvent = (error: SocketError) => {
@@ -242,6 +274,7 @@ export function subscribeRoomSocket(
   const onPlayback = (payload: unknown, audio: unknown): void => {
     const parsed = parsePlaybackPayload(payload);
     if (!parsed) return;
+    markLatency(parsed.utteranceId, "audio");
     const bytes = normalizeAudio(audio, (blobBytes) => {
       playbackRef.current(parsed, blobBytes);
     });
@@ -273,6 +306,8 @@ export function subscribeRoomSocket(
     // A dropped transport must not leave translated audio playing from a room
     // we are no longer connected to; a rejoining seat replays no audio.
     playbackResetRef.current();
+    // An in-flight interruption can never be confirmed across a disconnect.
+    onInterruptDisconnected();
   };
 
   const onConnectError = () => {
@@ -338,6 +373,7 @@ export function subscribeRoomSocket(
   socket.on("conversation:history", onHistory);
   socket.on("conversation:interim", onInterim);
   socket.on("conversation:interrupt", onInterrupt);
+  socket.on("conversation:interrupt_confirmed", handleInterruptConfirmed);
   socket.on("conversation:playback", onPlayback);
   socket.on("speech:capabilities", onCapabilities);
   socket.on("error", onErrorEvent);

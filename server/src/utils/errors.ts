@@ -11,6 +11,7 @@ export const ErrorCodes = {
   INVALID_CODE: "invalid_code",
   INVALID_PAYLOAD: "invalid_payload",
   NOT_IN_ROOM: "not_in_room",
+  RATE_LIMITED: "rate_limited",
   INTERNAL: "internal_error",
 } as const;
 
@@ -34,6 +35,7 @@ const MESSAGES: Record<ErrorCode, string> = {
   invalid_code: "Malformed room code.",
   invalid_payload: "Malformed event payload.",
   not_in_room: "You are not a member of that room.",
+  rate_limited: "Too many requests in a row — wait a moment and try again.",
   internal_error: "The server hit an unexpected problem.",
 };
 

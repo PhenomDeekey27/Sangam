@@ -96,6 +96,7 @@ export class RoomManager {
       participants: new Map(),
       utteranceSeq: 0,
       usedUtteranceIds: new Set(),
+      pendingInterrupt: null,
       transcript: [],
     };
     this.rooms.set(code, room);

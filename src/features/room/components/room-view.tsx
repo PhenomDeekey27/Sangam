@@ -16,6 +16,10 @@ import { RoomStage } from "@/features/room/components/room-stage";
 import { StateBanner } from "@/features/room/components/state-banner";
 import { languageQuery } from "@/features/room/utils/language-preference";
 import type { LanguagePreferences } from "@/features/room/utils/language-preference";
+import {
+  interruptButtonLabel,
+  isInterruptPending,
+} from "@/features/room/utils/interrupt-state";
 import { ROOM_EXPIRED_CODE } from "@/features/room/utils/connection";
 import { roomPath } from "@/features/room/utils/room-path";
 import type { RoomMode } from "@/features/room/types";
@@ -107,6 +111,9 @@ function RoomLive({ code, mode, preferences }: RoomLiveProps) {
     speakerStates,
     capturing,
     playback,
+    nowPlaying,
+    canInterrupt,
+    interruptState,
     entries,
     interims,
     notice,
@@ -116,7 +123,8 @@ function RoomLive({ code, mode, preferences }: RoomLiveProps) {
   } = conversation;
 
   const playing = playback.status === "playing";
-  const canInterrupt = connection === "connected" && you !== null;
+  const interruptLabel = interruptButtonLabel(interruptState);
+  const interruptPending = isInterruptPending(interruptState);
   const waiting = connection === "connected" && you !== null && !partner;
 
   return (
@@ -272,7 +280,7 @@ function RoomLive({ code, mode, preferences }: RoomLiveProps) {
             seats={{ you, partner }}
             speakerStates={speakerStates}
             capturing={capturing}
-            playing={playing}
+            nowPlaying={nowPlaying}
             flow={flow}
             bridgeLabel={conversation.bridgeLabel}
             broken={broken}
@@ -303,6 +311,8 @@ function RoomLive({ code, mode, preferences }: RoomLiveProps) {
             recognitionStatus={recognitionStatus}
             playing={playing}
             canInterrupt={canInterrupt}
+            interruptLabel={interruptLabel}
+            interruptPending={interruptPending}
             disabled={!canSendText}
             onToggleCapture={conversation.toggleCapture}
             onStopPlayback={conversation.stopPlayback}

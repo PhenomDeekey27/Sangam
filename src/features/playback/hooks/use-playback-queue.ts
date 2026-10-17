@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlaybackState } from "@/features/speech/types";
 import type { PlaybackPayload } from "@/types/socket";
+import type { LanguageCode } from "@/types";
 import { AudioPlayer, type PlayOutcome } from "@/features/playback/services/audio-player";
 import {
   PlaybackQueue,
@@ -11,7 +12,7 @@ import {
 
 /** The playable surface the hook drives; injectable for tests. */
 export interface PlaybackPlayer {
-  play(item: PlaybackItem): Promise<PlayOutcome>;
+  play(item: PlaybackItem, onStart?: () => void): Promise<PlayOutcome>;
   stop(): void;
   dispose(): void;
 }
@@ -22,10 +23,26 @@ export interface PlaybackQueueOptions {
   readonly createPlayer?: () => PlaybackPlayer;
   /** Report playback states to the room's shared `aria-live` region. */
   readonly onNotice?: (message: string | null) => void;
+  /**
+   * Development-only: fired once per item, at the instant its audio actually
+   * began (never for a blocked or interrupted attempt). Used for latency
+   * instrumentation; it cannot affect playback.
+   */
+  readonly onPlaybackStart?: (utteranceId: string, sequence: number) => void;
+}
+
+/** The translated-audio item actually playing right now, if any. */
+export interface NowPlaying {
+  readonly utteranceId: string;
+  readonly sequence: number;
+  /** The audio's language (the listener's target), not the speaker's. */
+  readonly language: LanguageCode;
 }
 
 export interface PlaybackQueueHook {
   readonly state: PlaybackState;
+  /** The item making sound right now; `null` when nothing is playing. */
+  readonly nowPlaying: NowPlaying | null;
   /** Accept one server delivery; drops duplicates and stale arrivals. */
   readonly enqueue: (payload: PlaybackPayload, audio: ArrayBuffer) => void;
   /** Manual stop: mute the active item and discard the whole queue. */
@@ -62,6 +79,7 @@ export function usePlaybackQueue(
   options: PlaybackQueueOptions = {},
 ): PlaybackQueueHook {
   const [state, setState] = useState<PlaybackState>({ status: "idle" });
+  const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null);
   const queueRef = useRef<PlaybackQueue | null>(null);
   if (queueRef.current === null) {
     queueRef.current = new PlaybackQueue({ capacity: options.capacity });
@@ -82,9 +100,11 @@ export function usePlaybackQueue(
   // Read through a ref so the mount effect below keeps empty deps (the raw
   // prop would trip exhaustive-deps and re-create the player per render).
   const createPlayerRef = useRef(options.createPlayer);
+  const onPlaybackStartRef = useRef(options.onPlaybackStart);
   useEffect(() => {
     noticeRef.current = options.onNotice;
     createPlayerRef.current = options.createPlayer;
+    onPlaybackStartRef.current = options.onPlaybackStart;
   });
 
   /**
@@ -110,9 +130,25 @@ export function usePlaybackQueue(
       let item = queueRef.current?.next() ?? null;
       while (item && !disposedRef.current) {
         setState({ status: "playing" });
+        setNowPlaying({
+          utteranceId: item.utteranceId,
+          sequence: item.sequence,
+          language: item.language as LanguageCode,
+        });
         let outcome: PlayOutcome;
         try {
-          const played = await playerRef.current?.play(item);
+          // One-shot: the player calls this at the true start, and only then.
+          const activeItem = item;
+          let started = false;
+          const markStarted = () => {
+            if (started) return;
+            started = true;
+            onPlaybackStartRef.current?.(
+              activeItem.utteranceId,
+              activeItem.sequence,
+            );
+          };
+          const played = await playerRef.current?.play(activeItem, markStarted);
           outcome = played ?? "stopped";
         } catch {
           setState({
@@ -126,11 +162,13 @@ export function usePlaybackQueue(
           notice(
             "Couldn't play one translation aloud — its text is still on screen.",
           );
+          setNowPlaying(null);
           outcome = "played"; // consume the broken item, keep going
         }
         if (outcome === "blocked") {
           // Park: the item stays queued; a user gesture re-drains.
           setState({ status: "blocked" });
+          setNowPlaying(null);
           notice(
             "Voice playback needs one interaction — tap or press any key to hear translations.",
           );
@@ -143,12 +181,14 @@ export function usePlaybackQueue(
             // Interruption or reset: the caller already dropped the stale
             // items, so keep whatever newer speech is still queued and keep
             // the caller's notice intact.
+            setNowPlaying(null);
             keepNotice = true;
             item = queueRef.current?.next() ?? null;
             continue;
           }
           queueRef.current?.clear();
           setState({ status: "stopped" });
+          setNowPlaying(null);
           notice(null);
           return;
         }
@@ -156,10 +196,14 @@ export function usePlaybackQueue(
         // A non-stop outcome means any earlier stop reason is spent.
         stopReasonRef.current = null;
         queueRef.current?.markPlayed(item);
+        // The item finished; clear before the next one (if any) claims the
+        // "now playing" slot so the source/listener labels never go stale.
+        setNowPlaying(null);
         item = queueRef.current?.next() ?? null;
       }
       if (!disposedRef.current) {
         setState({ status: "idle" });
+        setNowPlaying(null);
         if (playedAny && !keepNotice) notice(null);
       }
     } finally {
@@ -262,5 +306,5 @@ export function usePlaybackQueue(
     };
   }, []);
 
-  return { state, enqueue, stop, interrupt, reset } as const;
+  return { state, nowPlaying, enqueue, stop, interrupt, reset } as const;
 }

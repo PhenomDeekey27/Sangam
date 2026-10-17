@@ -69,6 +69,9 @@ interface ActiveSession {
   bytes: number;
   lastFinal: { text: string; at: number } | null;
   closed: boolean;
+  /** Local clock marks for development latency diagnostics only. */
+  startedAt: number;
+  lastChunkAt: number | null;
 }
 
 function toSocketError(error: SpeechProviderError): SocketError {
@@ -209,6 +212,7 @@ export class SpeechSessions {
       return;
     }
     active.bytes += bytes;
+    active.lastChunkAt = Date.now();
     active.session?.push(new Uint8Array(chunk as ArrayBufferLike));
   }
 
@@ -236,6 +240,8 @@ export class SpeechSessions {
       bytes: 0,
       lastFinal: null,
       closed: false,
+      startedAt: Date.now(),
+      lastChunkAt: null,
     };
   }
 
@@ -293,6 +299,15 @@ export class SpeechSessions {
       translation: { status: "unavailable" },
     };
     this.rooms.recordUtterance(room, entry);
+    logSpeechDiagnostic({
+      utteranceId: entry.utterance.id,
+      language: active.language,
+      chars: trimmed.length,
+      bytes: active.bytes,
+      sinceStartMs: now - active.startedAt,
+      sinceLastChunkMs:
+        active.lastChunkAt === null ? null : now - active.lastChunkAt,
+    });
     // Clear the speaker's own interim line; the partner's clears on the row.
     socket.emit("speech:interim", { text: "", language: active.language });
     this.io
@@ -326,4 +341,26 @@ function byteLength(chunk: unknown): number {
   if (chunk instanceof ArrayBuffer) return chunk.byteLength;
   if (ArrayBuffer.isView(chunk)) return chunk.byteLength;
   return 0;
+}
+
+/**
+ * Development-only speech timing: how long one finalized turn took from its
+ * session's start and from its last audio chunk. Contains ids, language, and
+ * counts only — never the transcript text or the audio.
+ */
+function logSpeechDiagnostic(detail: {
+  readonly utteranceId: string;
+  readonly language: string;
+  readonly chars: number;
+  readonly bytes: number;
+  readonly sinceStartMs: number;
+  readonly sinceLastChunkMs: number | null;
+}): void {
+  if (process.env.NODE_ENV === "production") return;
+  console.debug(
+    `[sangam] speech final ${detail.utteranceId} lang=${detail.language} ` +
+      `chars=${detail.chars} bytes=${detail.bytes} ` +
+      `sinceStartMs=${detail.sinceStartMs} ` +
+      `sinceLastChunkMs=${detail.sinceLastChunkMs ?? "?"}`,
+  );
 }

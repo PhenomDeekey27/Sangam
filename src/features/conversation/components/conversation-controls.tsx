@@ -10,6 +10,10 @@ export interface ConversationControlsProps {
   readonly recognitionStatus?: RecognitionStatus;
   readonly playing: boolean;
   readonly canInterrupt: boolean;
+  /** Phase-aware copy for the interrupt button (Ready/Interrupting…/Retry…). */
+  readonly interruptLabel?: string;
+  /** A request is in flight: the button shows a spinner and stays disabled. */
+  readonly interruptPending?: boolean;
   readonly disabled?: boolean;
   readonly onToggleCapture: () => void;
   readonly onStopPlayback: () => void;
@@ -20,7 +24,9 @@ export interface ConversationControlsProps {
 /**
  * Bottom conversation controls. The microphone is a 56px target (design
  * minimum) that emits expanding rings while the microphone is on, and shows
- * a pending state while the browser is still starting recognition.
+ * a pending state while the browser is still starting recognition. The
+ * interrupt button reports its own phase so a click never reads as a
+ * completed cancellation.
  */
 export function ConversationControls({
   capturing,
@@ -28,6 +34,8 @@ export function ConversationControls({
   recognitionStatus = "idle",
   playing,
   canInterrupt,
+  interruptLabel = "Interrupt",
+  interruptPending = false,
   disabled = false,
   onToggleCapture,
   onStopPlayback,
@@ -95,10 +103,15 @@ export function ConversationControls({
         <Button
           variant="outline"
           onClick={onInterrupt}
-          disabled={disabled || !canInterrupt}
+          disabled={disabled || !canInterrupt || interruptPending}
+          aria-busy={interruptPending}
         >
-          <Hand aria-hidden="true" className="size-4" />
-          Interrupt
+          {interruptPending ? (
+            <Loader2 aria-hidden="true" className="blink size-4" />
+          ) : (
+            <Hand aria-hidden="true" className="size-4" />
+          )}
+          {interruptLabel}
         </Button>
       </div>
     </div>

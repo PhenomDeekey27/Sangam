@@ -98,6 +98,53 @@ describe("AudioPlayer", () => {
     assert.equal(fake.paused(), true);
   });
 
+  it("reports the first start once, and never for a blocked or stopped attempt", async () => {
+    const resolved = createFakeElement({ outcome: "resolve" });
+    const started: number[] = [];
+    const player = new AudioPlayer({
+      createElement: () => resolved.element,
+      createObjectUrl: () => "blob:u",
+      revokeObjectUrl: () => {},
+    });
+    const pending = player.play(sampleItem(), () => started.push(1));
+    await tick();
+    assert.deepEqual(started, [1]);
+    resolved.fireEnded();
+    assert.equal(await pending, "played");
+    assert.deepEqual(started, [1]);
+
+    // A refused attempt never reports a start.
+    const blocked = createFakeElement({ outcome: "reject-not-allowed" });
+    const blockedPlayer = new AudioPlayer({
+      createElement: () => blocked.element,
+      createObjectUrl: () => "blob:u",
+      revokeObjectUrl: () => {},
+    });
+    let blockedStarts = 0;
+    assert.equal(
+      await blockedPlayer.play(sampleItem(), () => {
+        blockedStarts += 1;
+      }),
+      "blocked",
+    );
+    assert.equal(blockedStarts, 0);
+
+    // Stopped before the element ever started: still no start.
+    const late = createFakeElement({ outcome: "resolve" });
+    const latePlayer = new AudioPlayer({
+      createElement: () => late.element,
+      createObjectUrl: () => "blob:u",
+      revokeObjectUrl: () => {},
+    });
+    let lateStarts = 0;
+    const latePending = latePlayer.play(sampleItem(), () => {
+      lateStarts += 1;
+    });
+    latePlayer.stop();
+    assert.equal(await latePending, "stopped");
+    assert.equal(lateStarts, 0);
+  });
+
   it("resolves blocked when the browser refuses to start audio", async () => {
     const revoked: string[] = [];
     const fake = createFakeElement({ outcome: "reject-not-allowed" });

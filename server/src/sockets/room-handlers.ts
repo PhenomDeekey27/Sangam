@@ -10,6 +10,7 @@ import type {
 import type { TranslationService } from "../translation/translation-service.js";
 import {
   parseInterimPayload,
+  parseInterruptPayload,
   parseJoinPayload,
   parseLeavePayload,
   parseUtterancePayload,
@@ -270,26 +271,77 @@ export function registerRoomHandlers(
     });
   });
 
-  socket.on("conversation:interrupt", () => {
+  socket.on("conversation:interrupt", (payload, ack) => {
     const membership = rooms.membershipOf(socket.id);
     if (!membership) {
       socket.emit("error", errorFor(ErrorCodes.NOT_IN_ROOM));
+      ack?.({ ok: false, error: errorFor(ErrorCodes.NOT_IN_ROOM) });
       return;
     }
     const participant = rooms.participantOf(socket.id);
     /* c8 ignore next -- membership without participant would be corrupted */
     if (!participant) return;
-    // Membership is re-checked at every emit above, so a socket that has
-    // already left can never trigger a stale relay for the room it left.
-    if (!interruptCooldownOpen()) return;
-    // The boundary is the room's newest relayed utterance at the moment of the
-    // interruption: everything at or below it is the interrupted turn. The
-    // recipient uses it to stop active audio and reject late frames for that
-    // turn, while a later utterance (higher sequence) is new speech.
+    const parsed = parseInterruptPayload(payload);
+    if (!parsed.ok) {
+      ack?.({ ok: false, error: parsed.error });
+      return;
+    }
     const room = rooms.roomOf(socket.id);
+    /* c8 ignore next -- membership without room would be corrupted */
+    if (!room) return;
+    // A rapid repeat is refused rather than silently dropped, so the requester
+    // learns its request was not relayed and can retry deliberately.
+    if (!interruptCooldownOpen()) {
+      ack?.({ ok: false, error: errorFor(ErrorCodes.RATE_LIMITED) });
+      return;
+    }
+    // Nothing to interrupt with an empty room: report it as unrelayed instead
+    // of pretending the partner's audio stopped.
+    if (room.participants.size < 2) {
+      ack?.({
+        ok: true,
+        interruptId: parsed.value.interruptId,
+        relayed: false,
+      });
+      return;
+    }
+    // Remember the request so the partner's confirmation can be routed back to
+    // this socket. The boundary is the room's newest relayed utterance: the
+    // recipient stops audio at or below it and rejects late frames for that
+    // turn, while a later utterance (higher sequence) is new speech.
+    room.pendingInterrupt = {
+      interruptId: parsed.value.interruptId,
+      requesterSocketId: socket.id,
+    };
     socket.to(channelFor(membership.code)).emit("conversation:interrupt", {
       side: participant.side,
-      sequence: room?.utteranceSeq ?? 0,
+      sequence: room.utteranceSeq,
+      interruptId: parsed.value.interruptId,
+    });
+    ack?.({
+      ok: true,
+      interruptId: parsed.value.interruptId,
+      relayed: true,
+    });
+  });
+
+  socket.on("conversation:interrupt_ack", (payload) => {
+    // Only the interrupted partner sends this. The requester's own id never
+    // matches, and a stale confirmation for an older request is ignored.
+    const membership = rooms.membershipOf(socket.id);
+    if (!membership) return;
+    const participant = rooms.participantOf(socket.id);
+    /* c8 ignore next -- membership without participant would be corrupted */
+    if (!participant) return;
+    const parsed = parseInterruptPayload(payload);
+    if (!parsed.ok) return;
+    const room = rooms.roomOf(socket.id);
+    const pending = room?.pendingInterrupt;
+    if (!pending || pending.interruptId !== parsed.value.interruptId) return;
+    if (pending.requesterSocketId === socket.id) return;
+    io.to(pending.requesterSocketId).emit("conversation:interrupt_confirmed", {
+      side: participant.side,
+      interruptId: parsed.value.interruptId,
     });
   });
 }

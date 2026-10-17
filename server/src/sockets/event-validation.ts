@@ -34,6 +34,8 @@ export const LEAVE_KEYS = ["code"] as const;
 export const UTTERANCE_KEYS = ["utteranceId", "text", "language"] as const;
 /** Client fields accepted on an interim line. */
 export const INTERIM_KEYS = ["text", "language"] as const;
+/** Client fields accepted on an interruption request or its confirmation. */
+export const INTERRUPT_KEYS = ["interruptId"] as const;
 
 /** Bounds for a client-generated utterance id (mirrors the client utility). */
 export const MIN_UTTERANCE_ID_LENGTH = 8;
@@ -169,6 +171,25 @@ export function parseUtterancePayload(raw: unknown): ParseResult<{
       language: normalizeLanguage(raw.language),
     },
   };
+}
+
+/**
+ * Validate a `conversation:interrupt` request or its `conversation:interrupt_ack`
+ * confirmation. Only the correlation id is accepted; the server alone decides
+ * the requester's identity and the interruption boundary.
+ */
+export function parseInterruptPayload(
+  raw: unknown,
+): ParseResult<{ readonly interruptId: string }> {
+  if (!isPlainObject(raw)) return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
+  if (hasUnknownKeys(raw, INTERRUPT_KEYS)) {
+    return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
+  }
+  // The correlation id uses the same opaque, bounded alphabet as utterance ids.
+  if (!isUtteranceId(raw.interruptId)) {
+    return fail(errorFor(ErrorCodes.INVALID_PAYLOAD));
+  }
+  return { ok: true, value: { interruptId: raw.interruptId } };
 }
 
 /**

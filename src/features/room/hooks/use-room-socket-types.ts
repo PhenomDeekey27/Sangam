@@ -9,6 +9,7 @@ import type {
   SpeakerSide,
 } from "@/features/room/types";
 import type { SeatAssignment } from "@/features/room/utils/derive";
+import type { InterruptState } from "@/features/room/utils/interrupt-state";
 import type { LanguageCode } from "@/types";
 import type {
   PlaybackPayload,
@@ -54,6 +55,8 @@ export interface RoomSocketApi {
   readonly partnerInterim: InterimUtterance | null;
   readonly youState: SpeakerState;
   readonly partnerState: SpeakerState;
+  /** Requester-side interruption progress (requesting → confirmed/error). */
+  readonly interruptState: InterruptState;
   readonly retryConnection: () => void;
   /** Relay a finalized utterance under a fresh client-generated id. */
   readonly sendUtterance: (text: string, source: "typed" | "speech") => void;

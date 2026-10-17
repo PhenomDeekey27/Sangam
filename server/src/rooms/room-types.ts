@@ -67,11 +67,25 @@ export interface Room {
   /** Client-generated utterance ids already relayed; rejects re-plays. */
   readonly usedUtteranceIds: Set<string>;
   /**
+   * The most recently accepted interruption request, kept only so the
+   * interrupted partner's confirmation can be routed back to the socket that
+   * asked. Cleared of meaning once a newer request replaces it; a stale
+   * confirmation for an older id is ignored by the requester anyway.
+   */
+  pendingInterrupt: PendingInterrupt | null;
+  /**
    * Finalized transcript entries for this room's lifetime, oldest first.
    * Interims are deliberately never stored. Lives only as long as the room:
    * it is dropped with the room on expiry and lost on server restart.
    */
   readonly transcript: RoomTranscriptEntry[];
+}
+
+/** The interruption request awaiting the partner's confirmation. */
+export interface PendingInterrupt {
+  readonly interruptId: string;
+  /** Socket that asked; the confirmation is routed back to it. */
+  readonly requesterSocketId: string;
 }
 
 /** Where a socket is currently a member, if anywhere. */

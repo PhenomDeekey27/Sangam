@@ -219,6 +219,63 @@ describe("TtsService", () => {
     assert.equal(emitted.length, 0);
   });
 
+  it("reuses cached synthesis for an identical phrase without a second call", async () => {
+    const rooms = new RoomManager();
+    const emitted: Emitted[] = [];
+    const { room, listener } = twoSeatRoom(rooms, "TTS236");
+    const provider = new MockTtsProvider();
+    const service = new TtsService(stubIo(emitted), rooms, provider);
+
+    service.speakForListener(room, listener, "utt-c-1", TRANSLATION);
+    await flush();
+    service.speakForListener(room, listener, "utt-c-2", TRANSLATION);
+    await flush();
+
+    // The provider is asked once; both utterances are still delivered.
+    assert.equal(provider.calls.length, 1);
+    assert.equal(emitted.length, 2);
+    const second = playbackArgs(emitted[1]?.args ?? []);
+    assert.equal(second.payload.utteranceId, "utt-c-2");
+    assertAudioEquals(second.audio, fakeWavBytes(TRANSLATION.text));
+  });
+
+  it("never shares a cache entry across different text", async () => {
+    const rooms = new RoomManager();
+    const emitted: Emitted[] = [];
+    const { room, listener } = twoSeatRoom(rooms, "TTS759");
+    const provider = new MockTtsProvider();
+    const service = new TtsService(stubIo(emitted), rooms, provider);
+
+    service.speakForListener(room, listener, "utt-d-1", TRANSLATION);
+    await flush();
+    service.speakForListener(room, listener, "utt-d-2", {
+      text: "different words",
+      targetLanguage: "pa",
+    });
+    await flush();
+
+    assert.equal(provider.calls.length, 2);
+    assert.equal(emitted.length, 2);
+  });
+
+  it("synthesizes every time when the cache is disabled", async () => {
+    const rooms = new RoomManager();
+    const emitted: Emitted[] = [];
+    const { room, listener } = twoSeatRoom(rooms, "TTS763");
+    const provider = new MockTtsProvider();
+    const service = new TtsService(stubIo(emitted), rooms, provider, {
+      cacheBytes: 0,
+    });
+
+    service.speakForListener(room, listener, "utt-e-1", TRANSLATION);
+    await flush();
+    service.speakForListener(room, listener, "utt-e-2", TRANSLATION);
+    await flush();
+
+    assert.equal(provider.calls.length, 2);
+    assert.equal(emitted.length, 2);
+  });
+
   it("a null provider is a no-op for every invocation", () => {
     const rooms = new RoomManager();
     const emitted: Emitted[] = [];

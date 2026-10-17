@@ -10,6 +10,10 @@ import type {
 } from "@/features/room/hooks/use-room-socket-types";
 import type { RoomSocket } from "@/features/room/services/socket";
 import type { SpeakerState } from "@/features/conversation/types";
+import {
+  latencyTracker,
+  resetLatency,
+} from "@/features/conversation/utils/latency";
 
 /** What the recipient-side handlers did, recorded as an append-only log. */
 interface Recording {
@@ -25,6 +29,10 @@ interface Recording {
   playbackResets: number;
   /** How many Stage-6 playback deliveries reached the queue. */
   playbackEnqueues: number;
+  /** Correlation ids the server confirmed as cancelled by the partner. */
+  readonly confirmed: string[];
+  /** How many times an interruption was abandoned by a dropped transport. */
+  disconnected: number;
 }
 
 function recording(): Recording {
@@ -37,13 +45,15 @@ function recording(): Recording {
     playbackInterrupts: [],
     playbackResets: 0,
     playbackEnqueues: 0,
+    confirmed: [],
+    disconnected: 0,
   };
 }
 
 interface FakeSocket {
   readonly socket: RoomSocket;
   readonly emitted: { readonly event: string; readonly payload: unknown }[];
-  readonly dispatch: (event: string, payload: unknown) => void;
+  readonly dispatch: (event: string, ...args: unknown[]) => void;
 }
 
 /** Sufficient stand-in for the singleton `RoomSocket`: off/on/io wiring. */
@@ -69,9 +79,9 @@ function fakeSocket(): FakeSocket {
       on: () => {},
       off: () => {},
     },
-    dispatch: (event: string, payload: unknown) => {
+    dispatch: (event: string, ...args: unknown[]) => {
       for (const listener of handlers.get(event) ?? []) {
-        (listener as (value: unknown) => void)(payload);
+        (listener as (...values: unknown[]) => void)(...args);
       }
     },
   };
@@ -118,6 +128,13 @@ function contextFor(
       },
     },
     selfRef: { current: self },
+    partnerNameRef: { current: "Speaker A" },
+    onInterruptConfirmed: (interruptId: string) => {
+      rec.confirmed.push(interruptId);
+    },
+    onInterruptDisconnected: () => {
+      rec.disconnected += 1;
+    },
     pendingSnapshotRef: { current: null },
     wasMemberRef: { current: false },
     setSeats: () => {},
@@ -134,17 +151,29 @@ describe("interrupt handling on the receiving client", () => {
     const fake = fakeSocket();
     subscribeRoomSocket(contextFor(fake.socket, rec, { id: "p1", side: "b" }));
 
-    fake.dispatch("conversation:interrupt", { side: "a", sequence: 4 });
+    fake.dispatch("conversation:interrupt", {
+      side: "a",
+      sequence: 4,
+      interruptId: "int-1",
+    });
 
     assert.deepEqual(rec.youStates, ["interrupted"]);
     assert.deepEqual(rec.partnerStates, ["speaking"]);
     assert.deepEqual(rec.notes, [
-      "Your partner interrupted — their words stay in the transcript.",
+      "Speaker A interrupted — their new words will play next.",
     ]);
     // The server-stamped boundary reaches the playback layer verbatim.
     assert.deepEqual(rec.playbackInterrupts, [4]);
     assert.equal(rec.pending.length, 1);
     assert.equal(rec.pending[0]?.ms, SPEAKING_RESET_MS);
+    // The receiver confirms cancellation so the requester learns the audio
+    // actually stopped rather than assuming it from its own click.
+    assert.deepEqual(fake.emitted, [
+      {
+        event: "conversation:interrupt_ack",
+        payload: { interruptId: "int-1" },
+      },
+    ]);
 
     rec.pending[0]?.callback();
     assert.deepEqual(rec.youStates, ["interrupted", "idle"]);
@@ -157,7 +186,7 @@ describe("interrupt handling on the receiving client", () => {
     subscribeRoomSocket(contextFor(fake.socket, rec, { id: "p1", side: "b" }));
 
     // A legacy/partial frame still stops active audio, but discards nothing.
-    fake.dispatch("conversation:interrupt", { side: "a" });
+    fake.dispatch("conversation:interrupt", { side: "a", interruptId: "int-2" });
 
     assert.deepEqual(rec.playbackInterrupts, [0]);
   });
@@ -167,13 +196,19 @@ describe("interrupt handling on the receiving client", () => {
     const fake = fakeSocket();
     subscribeRoomSocket(contextFor(fake.socket, rec, { id: "p1", side: "a" }));
 
-    fake.dispatch("conversation:interrupt", { side: "a", sequence: 7 });
+    fake.dispatch("conversation:interrupt", {
+      side: "a",
+      sequence: 7,
+      interruptId: "int-3",
+    });
 
     assert.deepEqual(rec.youStates, []);
     assert.deepEqual(rec.partnerStates, []);
     assert.deepEqual(rec.notes, []);
     assert.deepEqual(rec.playbackInterrupts, []);
     assert.equal(rec.pending.length, 0);
+    // An own-side echo must not confirm anything back to the server either.
+    assert.deepEqual(fake.emitted, []);
   });
 
   it("re-arms a duplicate interrupt instead of stacking resets", () => {
@@ -181,8 +216,16 @@ describe("interrupt handling on the receiving client", () => {
     const fake = fakeSocket();
     subscribeRoomSocket(contextFor(fake.socket, rec, { id: "p1", side: "b" }));
 
-    fake.dispatch("conversation:interrupt", { side: "a", sequence: 3 });
-    fake.dispatch("conversation:interrupt", { side: "a", sequence: 5 });
+    fake.dispatch("conversation:interrupt", {
+      side: "a",
+      sequence: 3,
+      interruptId: "int-4",
+    });
+    fake.dispatch("conversation:interrupt", {
+      side: "a",
+      sequence: 5,
+      interruptId: "int-5",
+    });
 
     // Each arrival clears the pending reset first, so exactly one reset
     // callback is armed at any moment — no double reset queue.
@@ -192,6 +235,10 @@ describe("interrupt handling on the receiving client", () => {
     // Rapid interruptions are still applied in order; the newest boundary wins
     // inside the queue, so no stale audio can slip between them.
     assert.deepEqual(rec.playbackInterrupts, [3, 5]);
+    assert.deepEqual(
+      fake.emitted.map((item) => item.payload),
+      [{ interruptId: "int-4" }, { interruptId: "int-5" }],
+    );
   });
 
   it("stops and forgets playback when the transport drops", () => {
@@ -285,5 +332,66 @@ describe("interrupt handling on the receiving client", () => {
     assert.deepEqual(rec.partnerStates, ["speaking", "idle"]);
     assert.equal(rec.pending.length, 0);
     assert.ok(rec.notes.includes("Connection lost — reconnecting…"));
+    // A pending requester interruption can never be confirmed after a drop.
+    assert.equal(rec.disconnected, 1);
+  });
+
+  it("routes the partner's cancellation confirmation to the requester", () => {
+    const rec = recording();
+    const fake = fakeSocket();
+    subscribeRoomSocket(contextFor(fake.socket, rec, { id: "p1", side: "a" }));
+
+    fake.dispatch("conversation:interrupt_confirmed", {
+      side: "b",
+      interruptId: "int-9",
+    });
+
+    // Only the correlation id drives the requester's state machine; the
+    // confirmation itself never touches the receiver's playback sinks.
+    assert.deepEqual(rec.confirmed, ["int-9"]);
+    assert.deepEqual(rec.playbackInterrupts, []);
+  });
+
+  it("records the pipeline latency stages for a partner utterance", () => {
+    resetLatency();
+    const rec = recording();
+    const fake = fakeSocket();
+    const context = contextFor(fake.socket, rec, { id: "p1", side: "b" });
+    // The latency marks are only reached once the row is accepted.
+    (
+      context as unknown as { applyUtterance: () => boolean }
+    ).applyUtterance = () => true;
+    subscribeRoomSocket(context);
+
+    fake.dispatch("conversation:utterance", {
+      entry: {
+        utterance: {
+          id: "utt-lat-1",
+          speakerSide: "a",
+          language: "fr",
+          text: "Bonjour",
+          finalizedAt: 1_000,
+          sequence: 3,
+        },
+        translation: { status: "unavailable" },
+      },
+    });
+    fake.dispatch("conversation:translation", {
+      utteranceId: "utt-lat-1",
+      translation: { status: "complete", text: "ਸਤ", targetLanguage: "pa" },
+    });
+    fake.dispatch(
+      "conversation:playback",
+      { utteranceId: "utt-lat-1", sequence: 3, language: "pa", mimeType: "audio/wav" },
+      new ArrayBuffer(4),
+    );
+
+    const report = latencyTracker.report("utt-lat-1");
+    assert.ok(report);
+    assert.equal(report.marks.final, 1_000);
+    assert.equal(typeof report.marks.utterance, "number");
+    assert.equal(typeof report.marks.translation, "number");
+    assert.equal(typeof report.marks.audio, "number");
+    resetLatency();
   });
 });

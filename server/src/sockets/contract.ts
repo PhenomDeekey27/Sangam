@@ -5,6 +5,8 @@
  */
 export type {
   ClientToServerEvents,
+  InterruptAck,
+  InterruptRequest,
   RoomOpAck,
   ServerToClientEvents,
   SocketError,

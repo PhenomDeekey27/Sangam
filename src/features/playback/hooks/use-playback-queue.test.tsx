@@ -3,70 +3,10 @@ import { describe, it } from "node:test";
 import { mountHook } from "@/test/react-harness";
 import type { PlaybackPlayer } from "@/features/playback/hooks/use-playback-queue";
 import { usePlaybackQueue } from "@/features/playback/hooks/use-playback-queue";
-import type { PlayOutcome } from "@/features/playback/services/audio-player";
-import type { PlaybackItem } from "@/features/playback/services/playback-queue";
-import type { PlaybackPayload } from "@/types/socket";
-
-/** A scripted player: play() awaits `resume()` before it resolves. */
-function createScriptedPlayer() {
-  const played: string[] = [];
-  const blocked: string[] = [];
-  const waiters: Array<(outcome: PlayOutcome | "reject") => void> = [];
-  let nextOutcome: PlayOutcome = "played";
-  const release = (outcome: PlayOutcome | "reject") => {
-    for (const waiter of waiters.splice(0)) waiter(outcome);
-  };
-  const player: PlaybackPlayer = {
-    play(item: PlaybackItem) {
-      played.push(item.utteranceId);
-      if (nextOutcome === "blocked") {
-        // Autoplay refusal is known synchronously: the browser refuses to
-        // start audio, so the hook learns "blocked" without any waiter.
-        blocked.push(item.utteranceId);
-        nextOutcome = "played";
-        return Promise.resolve<PlayOutcome>("blocked");
-      }
-      return new Promise<PlayOutcome>((resolve, reject) => {
-        waiters.push((outcome) => {
-          if (outcome === "reject") {
-            reject(new Error("audio element error"));
-            return;
-          }
-          resolve(outcome);
-        });
-      });
-    },
-    stop() {
-      release("stopped");
-    },
-    dispose() {
-      release("stopped");
-    },
-  };
-  return {
-    player,
-    played,
-    blocked,
-    /** Resolve every pending play with the given outcome. */
-    resume(outcome: PlayOutcome = "played") {
-      release(outcome);
-    },
-    /** Reject every pending play (corrupt audio, unsupported …). */
-    failPending() {
-      release("reject");
-    },
-    setNextOutcome(outcome: PlayOutcome) {
-      nextOutcome = outcome;
-    },
-  };
-}
-
-function payload(
-  utteranceId: string,
-  sequence: number,
-): PlaybackPayload {
-  return { utteranceId, sequence, language: "pa", mimeType: "audio/wav" };
-}
+import {
+  createScriptedPlayer,
+  payload,
+} from "@/features/playback/hooks/playback-test-helpers";
 
 describe("usePlaybackQueue", () => {
   it("plays a delivery in order and reports its states", async () => {
@@ -358,6 +298,72 @@ describe("usePlaybackQueue", () => {
       await harness.perform(() => script.resume());
       await harness.advance(0);
       assert.deepEqual(harness.current().state, { status: "idle" });
+    } finally {
+      await harness.unmount();
+    }
+  });
+
+  it("reports the moment audio actually starts, and never a blocked attempt", async () => {
+    const script = createScriptedPlayer();
+    const starts: Array<{ id: string; sequence: number }> = [];
+    const harness = await mountHook(
+      (props: {
+        createPlayer: () => PlaybackPlayer;
+        onPlaybackStart: (id: string, sequence: number) => void;
+      }) =>
+        usePlaybackQueue({
+          createPlayer: props.createPlayer,
+          onPlaybackStart: props.onPlaybackStart,
+        }),
+      {
+        props: {
+          createPlayer: () => script.player,
+          onPlaybackStart: (id, sequence) => starts.push({ id, sequence }),
+        },
+      },
+    );
+    try {
+      const { enqueue } = harness.current();
+      enqueue(payload("u1", 1), new ArrayBuffer(4));
+      await harness.advance(0);
+      assert.deepEqual(starts, [{ id: "u1", sequence: 1 }]);
+
+      await harness.perform(() => script.resume());
+      await harness.advance(0);
+
+      // A refused start (autoplay policy) reports no start at all.
+      script.setNextOutcome("blocked");
+      enqueue(payload("u2", 2), new ArrayBuffer(4));
+      await harness.advance(0);
+      assert.deepEqual(starts, [{ id: "u1", sequence: 1 }]);
+    } finally {
+      await harness.unmount();
+    }
+  });
+
+  it("exposes the active item as nowPlaying and clears it when idle", async () => {
+    const script = createScriptedPlayer();
+    const harness = await mountHook(
+      (props: { createPlayer: () => PlaybackPlayer }) =>
+        usePlaybackQueue({ createPlayer: props.createPlayer }),
+      { props: { createPlayer: () => script.player } },
+    );
+    try {
+      assert.equal(harness.current().nowPlaying, null);
+
+      const { enqueue, interrupt } = harness.current();
+      enqueue(payload("u1", 1), new ArrayBuffer(4));
+      await harness.advance(0);
+      assert.deepEqual(harness.current().nowPlaying, {
+        utteranceId: "u1",
+        sequence: 1,
+        language: "pa",
+      });
+
+      // Interrupting mutes the active turn and clears the attribution.
+      await harness.perform(() => interrupt(1));
+      await harness.advance(0);
+      assert.equal(harness.current().nowPlaying, null);
     } finally {
       await harness.unmount();
     }

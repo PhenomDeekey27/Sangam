@@ -80,8 +80,13 @@ export class AudioPlayer {
    * `"blocked"` when the browser refused to start (autoplay policy), and
    * `"stopped"` when `stop`/`dispose` interrupted it. Rejects only on real
    * element/play failures (corrupt audio, unsupported type, …).
+   *
+   * `onStart` fires once, at the moment the element actually began playing
+   * (after `play()` resolves and only if no stop arrived first) — never for a
+   * blocked or cancelled attempt. It is a diagnostics hook and cannot affect
+   * the outcome.
    */
-  play(item: PlaybackItem): Promise<PlayOutcome> {
+  play(item: PlaybackItem, onStart?: () => void): Promise<PlayOutcome> {
     if (this.disposed) {
       return Promise.reject(new Error("audio player is disposed"));
     }
@@ -121,7 +126,17 @@ export class AudioPlayer {
       element
         .play()
         .then(() => {
-          if (this.stopped) finish("stopped");
+          if (this.stopped) {
+            finish("stopped");
+            return;
+          }
+          // The element accepted playback: this is the "first audio" moment.
+          // A throwing diagnostics hook must never break playback.
+          try {
+            onStart?.();
+          } catch {
+            /* diagnostics only */
+          }
         })
         .catch((error: unknown) => {
           if (this.stopped) finish("stopped");
