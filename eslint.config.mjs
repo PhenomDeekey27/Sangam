@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Playwright suite: transpiled by Playwright, kept out of the Next lint pass.
+    "e2e/**",
   ]),
 ]);
 

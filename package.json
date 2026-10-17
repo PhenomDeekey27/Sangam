@@ -9,6 +9,11 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --import ./src/test/setup-dom.ts --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:install": "playwright install chromium",
+    "test:e2e:wire": "node --import tsx --test \"e2e/wire/**/*.test.ts\"",
+    "test:e2e:typecheck": "tsc -p e2e/tsconfig.json --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:file-length": "node scripts/check-file-length.mjs"
@@ -24,6 +29,7 @@
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/turbopack": "^4",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^20",
