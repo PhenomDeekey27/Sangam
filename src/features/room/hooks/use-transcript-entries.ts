@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { TranscriptEntry } from "@/features/conversation/types";
+import type {
+  TranscriptEntry,
+  UtteranceId,
+} from "@/features/conversation/types";
+import type { TranslationState } from "@/features/translation/types";
 import { mergeTranscriptHistory } from "@/features/conversation/utils/transcript-history";
 
 export interface TranscriptEntriesApi {
@@ -10,6 +14,14 @@ export interface TranscriptEntriesApi {
   readonly applyUtterance: (entry: TranscriptEntry) => boolean;
   /** Merge a replayed history slice for the room this client is in. */
   readonly applyHistory: (history: readonly TranscriptEntry[]) => void;
+  /**
+   * Update the translation of a stored row in place; `false` when no row
+   * carries the id. Never appends: translations ride existing utterances.
+   */
+  readonly applyTranslation: (
+    utteranceId: UtteranceId,
+    translation: TranslationState,
+  ) => boolean;
 }
 
 /**
@@ -40,5 +52,20 @@ export function useTranscriptEntries(): TranscriptEntriesApi {
     [],
   );
 
-  return { entries, applyUtterance, applyHistory };
+  const applyTranslation = useCallback(
+    (utteranceId: UtteranceId, translation: TranslationState): boolean => {
+      if (!entryIdsRef.current.has(utteranceId)) return false;
+      setEntries((previous) =>
+        previous.map((entry) =>
+          entry.utterance.id === utteranceId
+            ? { ...entry, translation }
+            : entry,
+        ),
+      );
+      return true;
+    },
+    [],
+  );
+
+  return { entries, applyUtterance, applyHistory, applyTranslation };
 }

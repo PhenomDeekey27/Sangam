@@ -18,13 +18,31 @@ import {
   type RoomSocket,
 } from "@/features/room/services/socket";
 import { setSpeechCapabilities } from "@/features/speech/services/speech-capabilities";
+import { parseTranslationUpdate } from "@/features/conversation/utils/translation-payload";
+import { parsePlaybackPayload } from "@/features/playback/services/playback-payload";
+import type { TranslationState } from "@/features/translation/types";
 import { readWasMember } from "@/features/room/utils/connection";
 import type { LanguageCode } from "@/types";
-import type { SocketError, SpeechCapabilities } from "@/types/socket";
+import type {
+  PlaybackPayload,
+  SocketError,
+  SpeechCapabilities,
+} from "@/types/socket";
 import type { SelfIdentity } from "./use-room-socket-types";
 
 /** How long partner feedback lingers before seats return to idle. */
 export const SPEAKING_RESET_MS = 1400;
+
+/**
+ * Normalize a server-stamped interruption boundary at the socket boundary. A
+ * missing or malformed value degrades to `0`, which stops the active audio
+ * without discarding anything (the safe direction), so a bad frame can never
+ * drop legitimate queued speech.
+ */
+export function interruptBoundary(sequence: unknown): number {
+  if (typeof sequence !== "number" || !Number.isFinite(sequence)) return 0;
+  return sequence > 0 ? Math.floor(sequence) : 0;
+}
 
 /** Everything the socket subscriptions need from the owning hook. */
 export interface RoomSubscriptionContext {
@@ -37,11 +55,24 @@ export interface RoomSubscriptionContext {
   readonly applySnapshot: (participants: readonly ParticipantProfile[]) => void;
   readonly applyUtterance: (entry: TranscriptEntry) => boolean;
   readonly applyHistory: (entries: readonly TranscriptEntry[]) => void;
+  /** Update one stored row's translation; `false` when the id is unknown. */
+  readonly applyTranslation: (
+    utteranceId: string,
+    translation: TranslationState,
+  ) => boolean;
   readonly partnerActivity: () => void;
   readonly schedule: (callback: () => void, ms: number) => void;
   readonly clearTimers: () => void;
   readonly notifyRef: RefObject<(message: string | null) => void>;
   readonly silenceRef: RefObject<() => void>;
+  /** Stage-6 playback sink; the hook owns the queue and player. */
+  readonly playbackRef: RefObject<
+    (payload: PlaybackPayload, audio: ArrayBuffer) => void
+  >;
+  /** Stage-7 interruption sink: stop and discard up to the server boundary. */
+  readonly playbackInterruptRef: RefObject<(sequence: number) => void>;
+  /** Stage-7 teardown sink: stop and forget all playback (disconnect/leave). */
+  readonly playbackResetRef: RefObject<() => void>;
   readonly selfRef: RefObject<SelfIdentity | null>;
   readonly pendingSnapshotRef: RefObject<readonly ParticipantProfile[] | null>;
   readonly wasMemberRef: RefObject<boolean>;
@@ -71,11 +102,15 @@ export function subscribeRoomSocket(
     applySnapshot,
     applyUtterance,
     applyHistory,
+    applyTranslation,
     partnerActivity,
     schedule,
     clearTimers,
     notifyRef,
     silenceRef,
+    playbackRef,
+    playbackInterruptRef,
+    playbackResetRef,
     selfRef,
     pendingSnapshotRef,
     wasMemberRef,
@@ -131,6 +166,13 @@ export function subscribeRoomSocket(
     partnerActivity();
   };
 
+  const onTranslation = (payload: unknown) => {
+    // Updates the stored row in place — never appends a duplicate utterance.
+    const update = parseTranslationUpdate(payload);
+    if (!update) return;
+    applyTranslation(update.utteranceId, update.translation);
+  };
+
   const onHistory = (payload: {
     readonly code: string;
     readonly entries: readonly TranscriptEntry[];
@@ -160,8 +202,17 @@ export function subscribeRoomSocket(
     partnerActivity();
   };
 
-  const onInterrupt = (payload: { readonly side: SpeakerSide }) => {
+  const onInterrupt = (payload: {
+    readonly side: SpeakerSide;
+    readonly sequence?: unknown;
+  }) => {
+    // A participant's own interruption signal never arrives here in practice
+    // (the server relays it only to the partner), and must never stop their
+    // own playback if it did. Transcripts are untouched either way.
     if (payload.side === selfRef.current?.side) return;
+    // Mute the interrupted turn and reject its late audio before the visual
+    // highlight settles. The boundary is whatever the server stamped.
+    playbackInterruptRef.current(interruptBoundary(payload.sequence));
     clearTimers();
     setYouState("interrupted");
     setPartnerState("speaking");
@@ -180,6 +231,21 @@ export function subscribeRoomSocket(
 
   const onCapabilities = (payload: SpeechCapabilities) => {
     setSpeechCapabilities(payload);
+  };
+
+  /**
+   * Stage-6 playback delivery. The payload and binary audio come as two
+   * arguments; both are normalized before the queue sees them, so a bad
+   * frame can neither corrupt the queue nor crash the subscription. The
+   * engine may hand binary over as a Blob depending on transport settings.
+   */
+  const onPlayback = (payload: unknown, audio: unknown): void => {
+    const parsed = parsePlaybackPayload(payload);
+    if (!parsed) return;
+    const bytes = normalizeAudio(audio, (blobBytes) => {
+      playbackRef.current(parsed, blobBytes);
+    });
+    if (bytes) playbackRef.current(parsed, bytes);
   };
 
   const onConnect = () => {
@@ -204,6 +270,9 @@ export function subscribeRoomSocket(
     setSpeechCapabilities(null);
     notifyRef.current("Connection lost — reconnecting…");
     silenceRef.current();
+    // A dropped transport must not leave translated audio playing from a room
+    // we are no longer connected to; a rejoining seat replays no audio.
+    playbackResetRef.current();
   };
 
   const onConnectError = () => {
@@ -226,6 +295,34 @@ export function subscribeRoomSocket(
     silenceRef.current();
   };
 
+  /**
+   * Normalize the binary audio argument across transports: WebSocket
+   * delivers `ArrayBuffer`, long-polling may hand a `Blob`, and anything
+   * else is treated as unusable rather than crashing the queue. A Blob
+   * resolves through `onBlob` later; playback ordering is enforced by the
+   * queue's `sequence`, not arrival timing.
+   */
+  function normalizeAudio(
+    value: unknown,
+    onBlob: (bytes: ArrayBuffer) => void,
+  ): ArrayBuffer | null {
+    if (value instanceof ArrayBuffer) return value;
+    if (ArrayBuffer.isView(value)) {
+      return value.buffer.slice(
+        value.byteOffset,
+        value.byteOffset + value.byteLength,
+      ) as ArrayBuffer;
+    }
+    if (typeof Blob !== "undefined" && value instanceof Blob) {
+      void value
+        .arrayBuffer()
+        .then(onBlob)
+        .catch(() => undefined);
+      return null;
+    }
+    return null;
+  }
+
   socket.on("connect", onConnect);
   socket.on("disconnect", onDisconnect);
   socket.on("connect_error", onConnectError);
@@ -237,9 +334,11 @@ export function subscribeRoomSocket(
   socket.on("room:participant_joined", onParticipantJoined);
   socket.on("room:participant_left", onParticipantLeft);
   socket.on("conversation:utterance", onUtterance);
+  socket.on("conversation:translation", onTranslation);
   socket.on("conversation:history", onHistory);
   socket.on("conversation:interim", onInterim);
   socket.on("conversation:interrupt", onInterrupt);
+  socket.on("conversation:playback", onPlayback);
   socket.on("speech:capabilities", onCapabilities);
   socket.on("error", onErrorEvent);
 
@@ -255,6 +354,9 @@ export function subscribeRoomSocket(
     if (selfRef.current) {
       socket.emit("room:leave", { code: roomCode });
     }
+    // Leaving (or switching) a room must leave the player empty and consistent
+    // so the next room's sequence numbering starts from a clean watermark.
+    playbackResetRef.current();
     destroyRoomSocket();
     setSpeechCapabilities(null);
   };

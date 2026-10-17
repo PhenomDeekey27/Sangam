@@ -55,6 +55,9 @@ export function useRoomSocket({
   listeningLanguage,
   notify,
   onSilence,
+  onPlayback,
+  onPlaybackInterrupt,
+  onPlaybackReset,
 }: UseRoomSocketOptions): RoomSocketApi {
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [roomError, setRoomError] = useState<SocketError | null>(null);
@@ -62,7 +65,8 @@ export function useRoomSocket({
     you: null,
     partner: null,
   });
-  const { entries, applyUtterance, applyHistory } = useTranscriptEntries();
+  const { entries, applyUtterance, applyHistory, applyTranslation } =
+    useTranscriptEntries();
   const [partnerInterim, setPartnerInterim] = useState<InterimUtterance | null>(
     null,
   );
@@ -76,6 +80,9 @@ export function useRoomSocket({
   const pendingSnapshotRef = useRef<readonly ParticipantProfile[] | null>(null);
   const notifyRef = useRef(notify);
   const silenceRef = useRef(onSilence);
+  const playbackRef = useRef(onPlayback);
+  const playbackInterruptRef = useRef(onPlaybackInterrupt);
+  const playbackResetRef = useRef(onPlaybackReset);
   /**
    * Whether this browser profile was ever seated in this room (this mount or
    * a previous one — session storage survives refresh). Only a previous
@@ -90,6 +97,9 @@ export function useRoomSocket({
     seatsRef.current = seats;
     notifyRef.current = notify;
     silenceRef.current = onSilence;
+    playbackRef.current = onPlayback;
+    playbackInterruptRef.current = onPlaybackInterrupt;
+    playbackResetRef.current = onPlaybackReset;
   });
 
   const partnerActivity = useCallback(() => {
@@ -189,11 +199,15 @@ export function useRoomSocket({
       applySnapshot,
       applyUtterance,
       applyHistory,
+      applyTranslation,
       partnerActivity,
       schedule,
       clearTimers,
       notifyRef,
       silenceRef,
+      playbackRef,
+      playbackInterruptRef,
+      playbackResetRef,
       selfRef,
       pendingSnapshotRef,
       wasMemberRef,
@@ -209,6 +223,7 @@ export function useRoomSocket({
   }, [
     applyHistory,
     applySnapshot,
+    applyTranslation,
     applyUtterance,
     clearTimers,
     code,

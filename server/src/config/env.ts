@@ -14,6 +14,10 @@ export interface ServerEnv {
   readonly isProduction: boolean;
   /** Speech pipeline configuration; defaults to "unconfigured" when absent. */
   readonly speech?: SpeechEnvInput;
+  /** Machine-translation configuration; unavailable when unconfigured. */
+  readonly translation?: TranslationEnvInput;
+  /** Text-to-speech (playback) configuration; unavailable when unconfigured. */
+  readonly tts?: TtsEnvInput;
 }
 
 /**
@@ -43,6 +47,125 @@ export interface SpeechEnv {
   readonly deepgramModel: string;
   readonly maxSessionBytes: number;
   readonly providerUrl: string | null;
+}
+
+/**
+ * How the server chooses a machine-translation vendor:
+ * - `auto`   — Google primary, plus Gemini fallback when its key is present.
+ * - `google` — Google primary only; Gemini fallback explicitly disabled.
+ * - `gemini` — Google primary, Gemini fallback required (a missing key is a
+ *                startup error, as before).
+ * - `none`   — never translate (utterances stay `unavailable`).
+ */
+export type TranslationProviderMode = "auto" | "google" | "gemini" | "none";
+
+/** Raw (possibly partial) translation configuration. */
+export interface TranslationEnvInput {
+  readonly provider?: string | null;
+  readonly apiKey?: string | null;
+  readonly model?: string | null;
+}
+
+/** Validated translation configuration. The key stays server-side. */
+export interface TranslationEnv {
+  readonly mode: TranslationProviderMode;
+  /** Effective primary vendor, or `null` when translation is unavailable. */
+  readonly primary: "google" | null;
+  /** Effective fallback vendor, or `null` when fallback is disabled. */
+  readonly fallback: "gemini" | null;
+  readonly apiKey: string | null;
+  readonly model: string;
+}
+
+/**
+ * How the server chooses a text-to-speech vendor (Stage 6 playback):
+ * - `auto`  — Gemini TTS when a Gemini key is present, else none.
+ * - `gemini` — require Gemini TTS (a missing key is a startup error).
+ * - `none`  — never synthesize (listeners only ever read the transcript).
+ */
+export type TtsProviderMode = "auto" | "gemini" | "none";
+
+/** Raw (possibly partial) text-to-speech configuration. */
+export interface TtsEnvInput {
+  readonly provider?: string | null;
+  readonly apiKey?: string | null;
+  readonly model?: string | null;
+  readonly voice?: string | null;
+}
+
+/** Validated text-to-speech configuration. The key stays server-side. */
+export interface TtsEnv {
+  readonly mode: TtsProviderMode;
+  /** Effective vendor, or `null` when playback is unavailable. */
+  readonly provider: "gemini" | null;
+  readonly apiKey: string | null;
+  readonly model: string;
+  readonly voice: string;
+}
+
+const TTS_MODES: readonly TtsProviderMode[] = ["auto", "gemini", "none"];
+
+const DEFAULT_TTS_MODEL = "gemini-3.8-flash-lite-tts";
+const DEFAULT_TTS_VOICE = "Kore";
+
+/** Resolve partial text-to-speech configuration into an explicit shape. */
+export function resolveTtsEnv(input: TtsEnvInput = {}): TtsEnv {
+  const requested = (input.provider ?? "auto").trim().toLowerCase();
+  const mode: TtsProviderMode = (TTS_MODES as readonly string[]).includes(
+    requested,
+  )
+    ? (requested as TtsProviderMode)
+    : "auto";
+  const key = input.apiKey?.trim();
+  const apiKey = key && key.length > 0 ? key : null;
+  if (mode === "gemini" && !apiKey) {
+    throw new Error(
+      "TTS_PROVIDER=gemini requires GEMINI_API_KEY (or TTS_API_KEY) to be set in server/.env (see .env.example)",
+    );
+  }
+  return {
+    mode,
+    provider: mode === "none" || !apiKey ? null : "gemini",
+    apiKey,
+    model: input.model?.trim() || DEFAULT_TTS_MODEL,
+    voice: input.voice?.trim() || DEFAULT_TTS_VOICE,
+  };
+}
+
+const TRANSLATION_MODES: readonly TranslationProviderMode[] = [
+  "auto",
+  "google",
+  "gemini",
+  "none",
+];
+
+const DEFAULT_TRANSLATION_MODEL = "gemini-3.5-flash-lite";
+
+/** Resolve partial translation configuration into an explicit shape. */
+export function resolveTranslationEnv(
+  input: TranslationEnvInput = {},
+): TranslationEnv {
+  const requested = (input.provider ?? "auto").trim().toLowerCase();
+  const mode: TranslationProviderMode = (
+    TRANSLATION_MODES as readonly string[]
+  ).includes(requested)
+    ? (requested as TranslationProviderMode)
+    : "auto";
+  const key = input.apiKey?.trim();
+  const apiKey = key && key.length > 0 ? key : null;
+  if (mode === "gemini" && !apiKey) {
+    throw new Error(
+      "TRANSLATION_PROVIDER=gemini requires GEMINI_API_KEY to be set in server/.env (see .env.example)",
+    );
+  }
+  return {
+    mode,
+    primary: mode === "none" ? null : "google",
+    fallback:
+      (mode === "gemini" || mode === "auto") && apiKey ? "gemini" : null,
+    apiKey,
+    model: input.model?.trim() || DEFAULT_TRANSLATION_MODEL,
+  };
 }
 
 const DEV_DEFAULT_ORIGIN = "http://localhost:3000";
@@ -154,6 +277,19 @@ export function loadEnv(raw: NodeJS.ProcessEnv = process.env): ServerEnv {
         ? Number(raw.SPEECH_MAX_SESSION_BYTES)
         : undefined,
       providerUrl: raw.DEEPGRAM_PROVIDER_URL ?? null,
+    }),
+    translation: resolveTranslationEnv({
+      provider: raw.TRANSLATION_PROVIDER,
+      apiKey: raw.GEMINI_API_KEY ?? null,
+      model: raw.GEMINI_TRANSLATION_MODEL ?? null,
+    }),
+    tts: resolveTtsEnv({
+      provider: raw.TTS_PROVIDER,
+      // Playback shares the Gemini credential by default; TTS_API_KEY may
+      // point it at a separate project.
+      apiKey: raw.TTS_API_KEY ?? raw.GEMINI_API_KEY ?? null,
+      model: raw.TTS_MODEL,
+      voice: raw.TTS_VOICE,
     }),
   };
 }

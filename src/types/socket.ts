@@ -145,6 +145,23 @@ export interface ClientToServerEvents {
   "speech:stop": () => void;
 }
 
+/**
+ * Stage-6 translated-speech playback for one completed translation. Emitted
+ * only to the listener's socket, at most once per utterance id per room.
+ * `audio` is the binary second argument — a complete, self-describing audio
+ * container (WAV) the browser can play directly. History replays never carry
+ * audio: a rejoining seat gets the translated *text* rows only, and the
+ * client queues delivery in the utterance `sequence` order.
+ */
+export interface PlaybackPayload {
+  readonly utteranceId: UtteranceId;
+  /** Per-room ordering stamp of the utterance being played. */
+  readonly sequence: number;
+  /** Language the audio was synthesized in (the listener's target). */
+  readonly language: LanguageCode;
+  readonly mimeType: string;
+}
+
 export interface ServerToClientEvents {
   "room:state": (payload: {
     readonly code: RoomCode;
@@ -179,8 +196,26 @@ export interface ServerToClientEvents {
     readonly text: string;
     readonly language: LanguageCode;
   }) => void;
-  /** Emitted to the partner of whoever interrupted; `side` is the interrupter. */
-  "conversation:interrupt": (payload: { readonly side: SpeakerSide }) => void;
+  /**
+   * Emitted to the partner of whoever interrupted; `side` is the interrupter.
+   *
+   * `sequence` is the room's last relayed utterance sequence at the moment the
+   * interruption was accepted (server-stamped, not client-supplied). It is the
+   * playback boundary: any translated audio stamped at or below it belongs to
+   * the interrupted turn and must be stopped or dropped, while audio stamped
+   * above it is new speech and plays normally. It is `0` before any utterance
+   * has been relayed, which makes the interruption a pure stop with nothing to
+   * discard.
+   */
+  "conversation:interrupt": (payload: {
+    readonly side: SpeakerSide;
+    readonly sequence: number;
+  }) => void;
+  /**
+   * Playable audio for one completed translation, delivered only to the
+   * listener. Not part of `conversation:history`.
+   */
+  "conversation:playback": (payload: PlaybackPayload, audio: ArrayBuffer) => void;
   /** Reserved for the translation stage; not emitted by the Stage-3 server. */
   "conversation:translation": (payload: {
     readonly utteranceId: UtteranceId;

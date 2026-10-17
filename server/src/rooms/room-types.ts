@@ -4,6 +4,7 @@
  * and state does not replicate across multiple server instances.
  */
 import type { WireError } from "../utils/errors.js";
+import type { TranslationState } from "../../../src/features/translation/types/index.js";
 
 /** Which of the two speaker seats a participant occupies. Server-assigned only. */
 export type ParticipantSide = "a" | "b";
@@ -47,7 +48,11 @@ export interface RoomUtterance {
 /** A retained transcript row: the original utterance plus translation state. */
 export interface RoomTranscriptEntry {
   readonly utterance: RoomUtterance;
-  readonly translation: { readonly status: "unavailable" };
+  /**
+   * Starts `unavailable`; the translation service mutates this field in place
+   * to `complete`/`failed` so history replays carry the latest translation.
+   */
+  translation: TranslationState;
 }
 
 /** An in-memory room: at most one participant per side. */

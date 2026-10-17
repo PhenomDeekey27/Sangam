@@ -4,6 +4,8 @@ import type { Server, Socket } from "socket.io";
 import { resolveSpeechEnv } from "../config/env.js";
 import { RoomManager } from "../rooms/room-manager.js";
 import { SpeechSessions } from "./speech-sessions.js";
+import { MockTranslator } from "../translation/mock-translator.js";
+import { TranslationService } from "../translation/translation-service.js";
 import type {
   SpeechProvider,
   SpeechProviderError,
@@ -231,5 +233,107 @@ describe("SpeechSessions transcripts", () => {
     const h = harness();
     h.sessions.push(h.socket, new Uint8Array(8));
     assert.equal(h.roomEmitted.length, 0);
+  });
+});
+
+describe("SpeechSessions translation fan-out", () => {
+  function flush(ms = 20): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  it("translates a server final into the listener language in place", async () => {
+    const rooms = new RoomManager();
+    rooms.createAndJoin("TAENWX", {
+      socketId: "sock-ta",
+      language: "ta",
+      listeningLanguage: "ta",
+      displayName: "",
+    });
+    rooms.joinRoom("TAENWX", {
+      socketId: "sock-en",
+      language: "en",
+      listeningLanguage: "en",
+      displayName: "",
+    });
+    const roomEmitted: { channel: string; event: string; payload: unknown }[] =
+      [];
+    const socketEmitted: { event: string; payload: unknown }[] = [];
+    const io = {
+      to: (channel: string) => ({
+        emit: (event: string, payload: unknown) =>
+          roomEmitted.push({ channel, event, payload }),
+      }),
+    } as unknown as AppServer;
+    const translator = new MockTranslator({
+      canned: { ta: { en: { "வணக்கம்": "Hello" } } },
+    });
+    const translations = new TranslationService(
+      {
+        to: (socketId: string) => ({
+          emit: (event: string, payload: unknown) =>
+            socketEmitted.push({ event: `${socketId}:${event}`, payload }),
+        }),
+      } as unknown as AppServer,
+      rooms,
+      translator,
+    );
+    const scripted = scriptedProvider();
+    const sessions = new SpeechSessions(
+      io,
+      rooms,
+      resolveSpeechEnv({ provider: "mock" }),
+      scripted.provider,
+      translations,
+    );
+    const socket = {
+      id: "sock-ta",
+      emit: (event: string, payload: unknown) =>
+        socketEmitted.push({ event, payload }),
+      to: () => ({ emit: () => {} }),
+    } as unknown as AppSocket;
+
+    const started = sessions.start(socket, { language: "ta" });
+    assert.equal(started.ok, true);
+    scripted.sessions[0]?.emitFinal("வணக்கம்");
+    await flush();
+
+    // The finalized utterance was requested in the listener's language.
+    assert.deepEqual(translator.calls, [
+      { text: "வணக்கம்", sourceLanguage: "ta", targetLanguage: "en" },
+    ]);
+    const room = rooms.roomByCode("TAENWX");
+    assert.ok(room);
+    const row = room.transcript[0];
+    assert.ok(row);
+    // Original stays visible immediately; translation lands on the same row.
+    assert.equal(row.utterance.text, "வணக்கம்");
+    assert.deepEqual(row.translation, {
+      status: "complete",
+      text: "Hello",
+      targetLanguage: "en",
+    });
+    const update = socketEmitted.find((item) =>
+      item.event.endsWith("conversation:translation"),
+    );
+    assert.ok(update);
+    assert.equal(
+      (update.payload as { utteranceId: string }).utteranceId,
+      row.utterance.id,
+    );
+  });
+
+  it("leaves a server final untranslated when no translator is wired", async () => {
+    const h = harness();
+    h.sessions.start(h.socket, { language: "ta" });
+    h.scripted.sessions[0]?.emitFinal("வணக்கம்");
+    await flush();
+    const finals = h.roomEmitted.filter(
+      (e) => e.event === "conversation:utterance",
+    );
+    assert.equal(finals.length, 1);
+    const payload = finals[0]?.payload as {
+      entry: { translation: { status: string } };
+    };
+    assert.equal(payload.entry.translation.status, "unavailable");
   });
 });

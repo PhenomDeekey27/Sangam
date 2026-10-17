@@ -5,7 +5,10 @@ import {
   io as connectClient,
   type Socket as ClientSocket,
 } from "socket.io-client";
-import { createSangamServer, type SangamServer } from "../app.js";
+import {
+  createSangamServer,
+  type SangamServer,
+} from "../app.js";
 import type {
   ClientToServerEvents,
   RoomOpAck,
@@ -260,8 +263,10 @@ describe("socket room lifecycle", () => {
     const { creator, joiner } = await pair("892345");
     const creatorSees = onceEvent(creator, "conversation:interrupt");
     joiner.emit("conversation:interrupt");
-    const [{ side }] = await creatorSees;
+    const [{ side, sequence }] = await creatorSees;
     assert.equal(side, "b");
+    // No utterance has been relayed yet, so the boundary is a pure stop.
+    assert.equal(sequence, 0);
 
     const joinerSees = onceEvent(joiner, "conversation:interrupt");
     creator.emit("conversation:interrupt");

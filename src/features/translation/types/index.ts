@@ -6,7 +6,11 @@ export type TranslationStatus =
 
 /** Machine-readable reasons a translation can fail. */
 export type TranslationErrorCode =
-  "network" | "provider_error" | "unsupported_language" | "unknown";
+  | "network"
+  | "timeout"
+  | "provider_error"
+  | "unsupported_language"
+  | "unknown";
 
 /** A failed translation, with enough detail for an inline message. */
 export interface TranslationError {

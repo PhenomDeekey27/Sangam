@@ -26,6 +26,7 @@ import type {
   SpeechProviderError,
   SpeechProviderSession,
 } from "./provider.js";
+import type { TranslationService } from "../translation/translation-service.js";
 import type { SpeechEnv } from "../config/env.js";
 import { createSpeechProvider } from "./provider-factory.js";
 
@@ -79,6 +80,7 @@ export class SpeechSessions {
   private readonly rooms: RoomManager;
   private readonly provider: SpeechProvider;
   private readonly maxSessionBytes: number;
+  private readonly translations: TranslationService | null;
   private readonly active = new Map<string, ActiveSession>();
 
   constructor(
@@ -86,11 +88,13 @@ export class SpeechSessions {
     rooms: RoomManager,
     speech: SpeechEnv,
     provider: SpeechProvider = createSpeechProvider(speech),
+    translations: TranslationService | null = null,
   ) {
     this.io = io;
     this.rooms = rooms;
     this.provider = provider;
     this.maxSessionBytes = speech.maxSessionBytes;
+    this.translations = translations;
   }
 
   capabilities(): SpeechCapabilities {
@@ -294,6 +298,9 @@ export class SpeechSessions {
     this.io
       .to(channelFor(membership.code))
       .emit("conversation:utterance", { entry });
+    // Translate after broadcasting: the original is never delayed by the
+    // provider, and the translation updates this same row by utterance id.
+    this.translations?.translateUtterance(room, entry);
   }
 
   private fail(

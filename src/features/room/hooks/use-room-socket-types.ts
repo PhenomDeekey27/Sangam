@@ -10,7 +10,10 @@ import type {
 } from "@/features/room/types";
 import type { SeatAssignment } from "@/features/room/utils/derive";
 import type { LanguageCode } from "@/types";
-import type { SocketError } from "@/types/socket";
+import type {
+  PlaybackPayload,
+  SocketError,
+} from "@/types/socket";
 
 /** Identity the server assigned to this connection's membership. */
 export interface SelfIdentity {
@@ -29,6 +32,15 @@ export interface UseRoomSocketOptions {
   readonly notify: (message: string | null) => void;
   /** The connection dropped or membership failed: stop live capture. */
   readonly onSilence: () => void;
+  /** Stage-6 server-synthesized audio for this listener; validated upstream. */
+  readonly onPlayback: (payload: PlaybackPayload, audio: ArrayBuffer) => void;
+  /**
+   * Stage-7 remote interruption: stop and discard the interrupted turn up to
+   * this server-stamped sequence boundary.
+   */
+  readonly onPlaybackInterrupt: (sequence: number) => void;
+  /** Stop and forget all playback on disconnect, leave, or room change. */
+  readonly onPlaybackReset: () => void;
 }
 
 /** Socket lifecycle, membership, transcript relay, and interim lines. */

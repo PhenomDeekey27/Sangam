@@ -21,6 +21,7 @@ import {
   toSpeakerStates,
 } from "@/features/room/utils/derive";
 import { useSpeechCapture } from "@/features/speech/hooks/use-speech-capture";
+import { usePlaybackQueue } from "@/features/playback/hooks/use-playback-queue";
 import type {
   MicPermission,
   PlaybackState,
@@ -100,6 +101,20 @@ export function useRoomConversation({
     captureStopRef.current = stop;
   }, []);
 
+  // Translated-speech playback (Stage 6): the server synthesizes each
+  // completed translation for this listener; the queue plays in message
+  // order, and `stop` is ready for Stage-7 cancellation.
+  const playbackQueue = usePlaybackQueue({ onNotice: notify });
+  // The stable sinks go straight to the socket subscription: enqueue for new
+  // deliveries, interrupt for a remote interruption's boundary, reset for a
+  // disconnect/leave so the next room starts clean.
+  const {
+    enqueue: onPlayback,
+    interrupt: onPlaybackInterrupt,
+    reset: onPlaybackReset,
+    stop: stopPlayback,
+  } = playbackQueue;
+
   const {
     connection,
     roomError,
@@ -119,7 +134,12 @@ export function useRoomConversation({
     listeningLanguage: listening,
     notify,
     onSilence: () => captureStopRef.current(),
+    onPlayback,
+    onPlaybackInterrupt,
+    onPlaybackReset,
   });
+
+  // Translated-speech playback (Stage 6) is wired above the socket hook.
 
   const sendRecognized = useCallback(
     (text: string) => sendUtterance(text, "speech"),
@@ -155,10 +175,6 @@ export function useRoomConversation({
     }
     capture.toggle();
   }, [capture, connection, seats.you]);
-
-  const stopPlayback = useCallback(() => {
-    setNotice("Audio playback arrives in a later stage — nothing is playing.");
-  }, []);
 
   const youSide: SpeakerSide = seats.you?.side ?? "a";
   const partnerPresent = seats.partner !== null;
@@ -204,7 +220,7 @@ export function useRoomConversation({
       partnerPresent,
     ),
     capturing: capture.capturing,
-    playback: { status: "idle" } satisfies PlaybackState,
+    playback: playbackQueue.state,
     entries,
     interims,
     notice,

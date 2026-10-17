@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import {
+  createRoomActions,
   emitRoomJoin,
   type RoomJoinEffects,
+  type RoomActionContext,
 } from "@/features/room/services/room-actions";
+import {
+  destroyRoomSocket,
+  getRoomSocket,
+} from "@/features/room/services/socket";
 import type { RoomSocket } from "@/features/room/services/socket";
+import type { SpeakerState } from "@/features/conversation/types";
 import type { RoomOpAck } from "@/types/socket";
 
 interface Emitted {
@@ -174,5 +181,63 @@ describe("emitRoomJoin", () => {
     ack(emitted, 0, { ok: true, self: { id: "p1", side: "b" } });
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.deepEqual(log, ["joined:b:joined"]);
+  });
+});
+
+interface RecordingForActions {
+  readonly notes: (string | null)[];
+  readonly selfStates: SpeakerState[];
+  readonly partnerStates: SpeakerState[];
+  clears: number;
+}
+
+function recordingForActions(): RecordingForActions {
+  return { notes: [], selfStates: [], partnerStates: [], clears: 0 };
+}
+
+function contextForActions(
+  selfId: string | null,
+  rec: RecordingForActions,
+): RoomActionContext {
+  return {
+    language: "en",
+    selfId,
+    partnerPresent: false,
+    notify: (message) => rec.notes.push(message),
+    setSelfState: (state) => rec.selfStates.push(state),
+    setPartnerState: (state) => rec.partnerStates.push(state),
+    clearTimers: () => {
+      rec.clears += 1;
+    },
+    schedule: () => {},
+  };
+}
+
+describe("createRoomActions.interrupt guards", () => {
+  afterEach(() => {
+    // The singleton was created lazily in the guard paths; drop it so the
+    // suite never shares a socket across tests.
+    destroyRoomSocket();
+  });
+
+  it("does nothing when this client is not seated yet", () => {
+    const rec = recordingForActions();
+    const actions = createRoomActions(contextForActions(null, rec));
+    actions.interrupt();
+    assert.equal(rec.notes.length, 0);
+    assert.equal(rec.selfStates.length, 0);
+    assert.equal(rec.partnerStates.length, 0);
+    assert.equal(rec.clears, 0);
+  });
+
+  it("does nothing while the singleton socket is not connected", () => {
+    const rec = recordingForActions();
+    assert.equal(getRoomSocket().connected, false);
+    const actions = createRoomActions(contextForActions("p1", rec));
+    actions.interrupt();
+    assert.equal(rec.notes.length, 0);
+    assert.equal(rec.selfStates.length, 0);
+    assert.equal(rec.partnerStates.length, 0);
+    assert.equal(rec.clears, 0);
   });
 });

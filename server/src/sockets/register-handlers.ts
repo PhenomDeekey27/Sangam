@@ -2,6 +2,7 @@ import type { Server, Socket } from "socket.io";
 import type { RoomManager } from "../rooms/room-manager.js";
 import type { ClientToServerEvents, ServerToClientEvents } from "./contract.js";
 import type { SpeechSessions } from "../speech/speech-sessions.js";
+import type { TranslationService } from "../translation/translation-service.js";
 import { handleDisconnect, registerRoomHandlers } from "./room-handlers.js";
 
 type AppServer = Server<ClientToServerEvents, ServerToClientEvents>;
@@ -17,9 +18,10 @@ export function registerSocketHandlers(
   io: AppServer,
   rooms: RoomManager,
   speech: SpeechSessions,
+  translations: TranslationService | null = null,
 ): void {
   io.on("connection", (socket: AppSocket) => {
-    registerRoomHandlers(io, socket, rooms);
+    registerRoomHandlers(io, socket, rooms, translations);
     registerSpeechHandlers(socket, speech);
 
     socket.on("room:leave", () => {

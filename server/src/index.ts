@@ -28,6 +28,26 @@ async function main(): Promise<void> {
       "[sangam] no server speech provider configured — clients use browser recognition or typed messages",
     );
   }
+  const translation = server.translationEnv;
+  console.log(
+    `[sangam] translation primary: ${translation.primary ?? "none"}` +
+      `; fallback: ${translation.fallback ?? "none"}` +
+      ` (model: ${translation.model}; key configured: ${translation.apiKey ? "yes" : "no"})`,
+  );
+  if (!translation.primary) {
+    console.log(
+      "[sangam] no translation provider configured — transcripts stay untranslated",
+    );
+  }
+  const tts = server.ttsEnv;
+  console.log(
+    `[sangam] playback provider: ${tts.provider ?? "none"} (key configured: ${tts.apiKey ? "yes" : "no"}; model: ${tts.model}; voice: ${tts.voice})`,
+  );
+  if (!tts.provider) {
+    console.log(
+      "[sangam] no text-to-speech provider configured — listeners read translations as text only",
+    );
+  }
   console.log(
     "[sangam] in-memory rooms: state is lost on restart and not shared across instances",
   );

@@ -7,6 +7,7 @@ import type {
   RoomOpAck,
   ServerToClientEvents,
 } from "./contract.js";
+import type { TranslationService } from "../translation/translation-service.js";
 import {
   parseInterimPayload,
   parseJoinPayload,
@@ -17,6 +18,31 @@ import {
 type AppServer = Server<ClientToServerEvents, ServerToClientEvents>;
 type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 type Ack = ((response: RoomOpAck) => void) | undefined;
+
+/**
+ * Window within which repeats of `conversation:interrupt` from the same
+ * socket are suppressed. Wide enough to absorb a double-tapped button or a
+ * briefly stuck client, narrow enough to never delay a deliberate
+ * re-interruption in a natural two-way conversation.
+ */
+export const INTERRUPT_COOLDOWN_MS = 800;
+
+/**
+ * One-shot-per-window gate. Returns whether the caller may act now; the
+ * window restarts on every accepted call. `now` is injectable for tests.
+ */
+export function createInterruptGate(
+  cooldownMs: number,
+  now: () => number = Date.now,
+): () => boolean {
+  let lastAcceptedAt = Number.NEGATIVE_INFINITY;
+  return () => {
+    const time = now();
+    if (time - lastAcceptedAt < cooldownMs) return false;
+    lastAcceptedAt = time;
+    return true;
+  };
+}
 
 /** Socket.IO room-channel name for a Sangam room code. */
 export function channelFor(code: string): string {
@@ -118,7 +144,10 @@ export function registerRoomHandlers(
   io: AppServer,
   socket: AppSocket,
   rooms: RoomManager,
+  translations: TranslationService | null = null,
 ): void {
+  // Per connection: a fresh socket always starts out allowed to interrupt.
+  const interruptCooldownOpen = createInterruptGate(INTERRUPT_COOLDOWN_MS);
   socket.on("room:create", (payload, ack) => {
     const parsed = parseJoinPayload(payload);
     if (!parsed.ok) {
@@ -214,6 +243,9 @@ export function registerRoomHandlers(
     io.to(channelFor(membership.code)).emit("conversation:utterance", {
       entry,
     });
+    // Translate after broadcasting: the original is never delayed by the
+    // provider, and the translation updates this same row by utterance id.
+    translations?.translateUtterance(room, entry);
   });
 
   socket.on("conversation:interim", (payload) => {
@@ -247,9 +279,18 @@ export function registerRoomHandlers(
     const participant = rooms.participantOf(socket.id);
     /* c8 ignore next -- membership without participant would be corrupted */
     if (!participant) return;
-    socket
-      .to(channelFor(membership.code))
-      .emit("conversation:interrupt", { side: participant.side });
+    // Membership is re-checked at every emit above, so a socket that has
+    // already left can never trigger a stale relay for the room it left.
+    if (!interruptCooldownOpen()) return;
+    // The boundary is the room's newest relayed utterance at the moment of the
+    // interruption: everything at or below it is the interrupted turn. The
+    // recipient uses it to stop active audio and reject late frames for that
+    // turn, while a later utterance (higher sequence) is new speech.
+    const room = rooms.roomOf(socket.id);
+    socket.to(channelFor(membership.code)).emit("conversation:interrupt", {
+      side: participant.side,
+      sequence: room?.utteranceSeq ?? 0,
+    });
   });
 }
 

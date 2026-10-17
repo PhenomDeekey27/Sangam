@@ -21,8 +21,17 @@ export type RecognitionStatus =
  */
 export type SpeechTransport = "server" | "browser" | "none";
 
-/** Status of translated-speech playback. */
-export type PlaybackStatus = "idle" | "playing" | "stopped" | "error";
+/**
+ * Status of translated-speech playback. `blocked` means the browser refused
+ * to start audio (autoplay policy) and playback is parked until a user
+ * gesture unlocks it.
+ */
+export type PlaybackStatus =
+  | "idle"
+  | "playing"
+  | "stopped"
+  | "blocked"
+  | "error";
 
 /** Machine-readable reasons a speech capability can fail. */
 export type SpeechErrorCode =
