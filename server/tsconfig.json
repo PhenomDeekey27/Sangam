@@ -17,6 +17,7 @@
     "declaration": false,
     "types": ["node"],
     "baseUrl": ".",
+    "rootDir": "..",
     "paths": {
       "@/*": ["../src/*"]
     }
