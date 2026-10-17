@@ -21,13 +21,14 @@ export interface SocketError {
 
 /**
  * Which speech-to-text engine the server is currently able to run.
+ * - `sarvam`   — Sarvam Saaras (server-side only); the preferred provider.
  * - `deepgram` — a real, credentialed streaming provider (server-side only).
  * - `mock`     — a deterministic development/test double; never real speech.
  * - `none`     — no server provider configured; clients fall back to the
  *                browser's own (limited) recognition or the text composer.
  * The API key never leaves the server: this is only a capability label.
  */
-export type SpeechProviderId = "deepgram" | "mock" | "none";
+export type SpeechProviderId = "sarvam" | "deepgram" | "mock" | "none";
 
 /** What the server advertises about its speech pipeline on connect. */
 export interface SpeechCapabilities {
@@ -196,6 +197,35 @@ export interface PlaybackPayload {
   readonly mimeType: string;
 }
 
+/**
+ * Why no server-synthesized audio will arrive for one utterance. The
+ * translated text is still on the transcript row; this only tells the listener
+ * that the *speech* leg failed, so the client can fall back to the browser's
+ * own `speechSynthesis` (or stay silent) instead of waiting forever.
+ */
+export type PlaybackUnavailableReason =
+  /** No text-to-speech provider is configured for this language. */
+  | "provider_unavailable"
+  /** The provider refused the target language (unsupported by its catalog). */
+  | "unsupported_language"
+  /** Every configured provider errored on this text. */
+  | "synthesis_failed"
+  /** Audio was produced but exceeded the relay ceiling and was dropped. */
+  | "audio_dropped";
+
+/**
+ * Sent only to the listener, at most once per utterance id, when the playback
+ * stage cannot deliver audio. Never sent when audio was delivered.
+ */
+export interface PlaybackUnavailablePayload {
+  readonly utteranceId: UtteranceId;
+  /** Per-room ordering stamp of the utterance whose speech failed. */
+  readonly sequence: number;
+  /** The listener's target language the speech was to be produced in. */
+  readonly language: LanguageCode;
+  readonly reason: PlaybackUnavailableReason;
+}
+
 export interface ServerToClientEvents {
   "room:state": (payload: {
     readonly code: RoomCode;
@@ -261,6 +291,15 @@ export interface ServerToClientEvents {
    * listener. Not part of `conversation:history`.
    */
   "conversation:playback": (payload: PlaybackPayload, audio: ArrayBuffer) => void;
+  /**
+   * No server-synthesized audio will arrive for one utterance (see
+   * `PlaybackUnavailableReason`). Emitted only to the listener and never
+   * alongside `conversation:playback` for the same utterance id. The client
+   * may speak the translated text with its own `speechSynthesis`.
+   */
+  "conversation:playback_unavailable": (
+    payload: PlaybackUnavailablePayload,
+  ) => void;
   /** Reserved for the translation stage; not emitted by the Stage-3 server. */
   "conversation:translation": (payload: {
     readonly utteranceId: UtteranceId;

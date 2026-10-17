@@ -307,12 +307,18 @@ describe("translated-speech playback flow (mocked vendors)", () => {
     );
 
     const translated = onceEvent(guest, "conversation:translation");
+    const unavailable = onceEvent(guest, "conversation:playback_unavailable");
     creator.emit("conversation:utterance", {
       utteranceId: "utt-pb-quiet-01",
       text: "Bonjour",
       language: "fr",
     });
     await translated;
+    const [unavailablePayload] = await unavailable;
+    assert.equal(unavailablePayload.utteranceId, "utt-pb-quiet-01");
+    assert.equal(unavailablePayload.language, "pa");
+    assert.equal(unavailablePayload.reason, "provider_unavailable");
+    assert.ok(unavailablePayload.sequence >= 1);
 
     let playbackCount = 0;
     guest.on("conversation:playback", () => {
@@ -324,5 +330,63 @@ describe("translated-speech playback flow (mocked vendors)", () => {
     creator.disconnect();
     guest.disconnect();
     await quietRoom.close();
+  });
+
+  it("reports unsupported_language when no configured voice covers the target", async () => {
+    // A provider that only speaks Tamil cannot serve seat B's Punjabi target.
+    const restricted = new MockTtsProvider({ languages: ["ta"] });
+    const restrictedServer = createSangamServer(
+      {
+        port: 0,
+        clientOrigins: ["http://localhost:3000"],
+        isProduction: false,
+      },
+      { translator, ttsProvider: restricted },
+    );
+    await restrictedServer.listen();
+    const address = restrictedServer.httpServer.address() as AddressInfo;
+    const restrictedUrl = `http://127.0.0.1:${address.port}`;
+
+    const connectTo = (target: string): Promise<TestClient> =>
+      new Promise((resolve, reject) => {
+        const socket = connectClient(target, {
+          transports: ["websocket"],
+          reconnection: false,
+        });
+        socket.once("connect", () => resolve(socket));
+        socket.once("connect_error", reject);
+      });
+
+    const creator = await connectTo(restrictedUrl);
+    await new Promise<RoomOpAck>((resolve) =>
+      creator.emit(
+        "room:create",
+        { code: "PBU234", language: "fr", listeningLanguage: "fr" },
+        resolve,
+      ),
+    );
+    const guest = await connectTo(restrictedUrl);
+    await new Promise<RoomOpAck>((resolve) =>
+      guest.emit(
+        "room:join",
+        { code: "PBU234", language: "pa", listeningLanguage: "pa" },
+        resolve,
+      ),
+    );
+
+    const unavailable = onceEvent(guest, "conversation:playback_unavailable");
+    creator.emit("conversation:utterance", {
+      utteranceId: "utt-pb-unsupported-01",
+      text: "Bonjour",
+      language: "fr",
+    });
+    const [payload] = await unavailable;
+    assert.equal(payload.reason, "unsupported_language");
+    assert.equal(payload.language, "pa");
+    assert.equal(restricted.calls.length, 0);
+
+    creator.disconnect();
+    guest.disconnect();
+    await restrictedServer.close();
   });
 });

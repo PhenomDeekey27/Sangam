@@ -195,14 +195,22 @@ describe("TtsService", () => {
     await flush();
 
     assert.equal(provider.calls.length, 1);
-    assert.equal(emitted.length, 0);
+    // No audio, but the listener is told so it can speak the text itself.
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]?.event, "conversation:playback_unavailable");
+    assert.deepEqual(emitted[0]?.args[0], {
+      utteranceId: "utt-a-6",
+      sequence: 0,
+      language: "pa",
+      reason: "synthesis_failed",
+    });
     // The row's translation state is untouched by playback — it lives on the
     // transcript and has already been emitted by the translation service.
     const stored = room.transcript.find((row) => row.utterance.id === "utt-a-6");
     assert.equal(stored, undefined);
   });
 
-  it("drops oversized audio without delivery", async () => {
+  it("drops oversized audio and reports it as unavailable", async () => {
     const rooms = new RoomManager();
     const emitted: Emitted[] = [];
     const { room, listener } = twoSeatRoom(rooms, "TTS759");
@@ -216,7 +224,12 @@ describe("TtsService", () => {
     service.speakForListener(room, listener, "utt-a-7", TRANSLATION);
     await flush();
 
-    assert.equal(emitted.length, 0);
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]?.event, "conversation:playback_unavailable");
+    assert.equal(
+      (emitted[0]?.args[0] as { reason: string }).reason,
+      "audio_dropped",
+    );
   });
 
   it("reuses cached synthesis for an identical phrase without a second call", async () => {
@@ -276,13 +289,23 @@ describe("TtsService", () => {
     assert.equal(emitted.length, 2);
   });
 
-  it("a null provider is a no-op for every invocation", () => {
+  it("reports provider_unavailable, once, when no provider is configured", () => {
     const rooms = new RoomManager();
     const emitted: Emitted[] = [];
     const { room, listener } = twoSeatRoom(rooms, "TTS758");
     const service = new TtsService(stubIo(emitted), rooms, null);
 
     service.speakForListener(room, listener, "utt-a-8", TRANSLATION);
-    assert.equal(emitted.length, 0);
+    // A duplicate invocation is refused by the same dedup guard.
+    service.speakForListener(room, listener, "utt-a-8", TRANSLATION);
+
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]?.event, "conversation:playback_unavailable");
+    assert.deepEqual(emitted[0]?.args[0], {
+      utteranceId: "utt-a-8",
+      sequence: 0,
+      language: "pa",
+      reason: "provider_unavailable",
+    });
   });
 });

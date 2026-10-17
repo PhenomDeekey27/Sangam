@@ -185,8 +185,11 @@ export class SpeechSessions {
     this.active.set(socket.id, active);
     active.session = this.provider.open({
       language,
+      mimeType:
+        typeof request.mimeType === "string" ? request.mimeType : undefined,
       onInterim: (text) => this.handleInterim(socket, active, text),
-      onFinal: (text) => this.handleFinal(socket, active, text),
+      onFinal: (text, metadata) =>
+        this.handleFinal(socket, active, text, metadata?.detectedLanguage ?? null),
       onError: (error) => this.fail(socket, active, error),
       onClose: () => {},
     });
@@ -266,6 +269,7 @@ export class SpeechSessions {
     socket: AppSocket,
     active: ActiveSession,
     text: string,
+    detectedLanguage: string | null,
   ): void {
     if (active.closed) return;
     const trimmed = text.trim();
@@ -286,12 +290,23 @@ export class SpeechSessions {
     const room = this.rooms.roomOf(socket.id);
     if (!membership || !participant || !room) return;
 
+    // The seat's configured speaking language is the default source. A
+    // reliable provider detection replaces it only when it names a language
+    // Sangam actually supports, so the translation stage never receives an
+    // unknown source code.
+    const language =
+      detectedLanguage !== null &&
+      detectedLanguage !== active.language &&
+      isLanguageCode(detectedLanguage)
+        ? normalizeLanguage(detectedLanguage)
+        : active.language;
+
     room.utteranceSeq += 1;
     const entry: RoomTranscriptEntry = {
       utterance: {
         id: randomUUID(),
         speakerSide: participant.side,
-        language: active.language,
+        language,
         text: trimmed,
         finalizedAt: now,
         sequence: room.utteranceSeq,
@@ -301,7 +316,8 @@ export class SpeechSessions {
     this.rooms.recordUtterance(room, entry);
     logSpeechDiagnostic({
       utteranceId: entry.utterance.id,
-      language: active.language,
+      language,
+      configuredLanguage: active.language,
       chars: trimmed.length,
       bytes: active.bytes,
       sinceStartMs: now - active.startedAt,
@@ -309,7 +325,7 @@ export class SpeechSessions {
         active.lastChunkAt === null ? null : now - active.lastChunkAt,
     });
     // Clear the speaker's own interim line; the partner's clears on the row.
-    socket.emit("speech:interim", { text: "", language: active.language });
+    socket.emit("speech:interim", { text: "", language });
     this.io
       .to(channelFor(membership.code))
       .emit("conversation:utterance", { entry });
@@ -351,6 +367,8 @@ function byteLength(chunk: unknown): number {
 function logSpeechDiagnostic(detail: {
   readonly utteranceId: string;
   readonly language: string;
+  /** The seat's configured speaking language, when detection overrode it. */
+  readonly configuredLanguage?: string;
   readonly chars: number;
   readonly bytes: number;
   readonly sinceStartMs: number;
@@ -359,6 +377,9 @@ function logSpeechDiagnostic(detail: {
   if (process.env.NODE_ENV === "production") return;
   console.debug(
     `[sangam] speech final ${detail.utteranceId} lang=${detail.language} ` +
+      (detail.configuredLanguage
+        ? `configuredLang=${detail.configuredLanguage} `
+        : "") +
       `chars=${detail.chars} bytes=${detail.bytes} ` +
       `sinceStartMs=${detail.sinceStartMs} ` +
       `sinceLastChunkMs=${detail.sinceLastChunkMs ?? "?"}`,

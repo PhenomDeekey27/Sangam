@@ -1,5 +1,15 @@
-import { Hand, Loader2, Mic, MicOff, Square, VolumeX } from "lucide-react";
+import {
+  Hand,
+  Loader2,
+  Mic,
+  MicOff,
+  Square,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import type { MicPermission, RecognitionStatus } from "@/features/speech/types";
+import type { PlaybackStatus } from "@/features/speech/types";
+import { playbackControl } from "@/features/conversation/utils/playback-control";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -8,7 +18,11 @@ export interface ConversationControlsProps {
   readonly mic: MicPermission;
   /** Browser recognition status; "starting" shows a pending mic state. */
   readonly recognitionStatus?: RecognitionStatus;
-  readonly playing: boolean;
+  /**
+   * Current translated-audio status. It chooses what the playback control says
+   * and does; it never decides whether the control is usable.
+   */
+  readonly playbackStatus?: PlaybackStatus;
   readonly canInterrupt: boolean;
   /** Phase-aware copy for the interrupt button (Ready/Interrupting…/Retry…). */
   readonly interruptLabel?: string;
@@ -16,7 +30,8 @@ export interface ConversationControlsProps {
   readonly interruptPending?: boolean;
   readonly disabled?: boolean;
   readonly onToggleCapture: () => void;
-  readonly onStopPlayback: () => void;
+  /** Stop what is playing, or unlock/resume playback from this click. */
+  readonly onPlaybackAction: () => void;
   readonly onInterrupt: () => void;
   readonly className?: string;
 }
@@ -26,25 +41,29 @@ export interface ConversationControlsProps {
  * minimum) that emits expanding rings while the microphone is on, and shows
  * a pending state while the browser is still starting recognition. The
  * interrupt button reports its own phase so a click never reads as a
- * completed cancellation.
+ * completed cancellation. The playback control is the room's audio switch:
+ * it stops what is playing, and otherwise doubles as the one gesture that lets
+ * a browser start audio at all, so only an unusable room disables it.
  */
 export function ConversationControls({
   capturing,
   mic,
   recognitionStatus = "idle",
-  playing,
+  playbackStatus = "idle",
   canInterrupt,
   interruptLabel = "Interrupt",
   interruptPending = false,
   disabled = false,
   onToggleCapture,
-  onStopPlayback,
+  onPlaybackAction,
   onInterrupt,
   className,
 }: ConversationControlsProps) {
   const blocked = mic === "denied" || mic === "unavailable";
   const starting = capturing && recognitionStatus === "starting";
   const MicIcon = mic === "unavailable" ? MicOff : capturing ? Square : Mic;
+  const playback = playbackControl(playbackStatus, disabled);
+  const PlaybackIcon = playback.action === "stop" ? VolumeX : Volume2;
 
   return (
     <div className={cn("flex flex-wrap items-center gap-3", className)}>
@@ -94,11 +113,18 @@ export function ConversationControls({
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         <Button
           variant="outline"
-          onClick={onStopPlayback}
-          disabled={disabled || !playing}
+          onClick={onPlaybackAction}
+          disabled={playback.disabled}
+          aria-label={playback.description}
+          title={playback.description}
+          data-action={playback.action}
+          aria-pressed={playback.active}
         >
-          <VolumeX aria-hidden="true" className="size-4" />
-          Stop playback
+          <PlaybackIcon
+            aria-hidden="true"
+            className={cn("size-4", playback.active && "blink")}
+          />
+          {playback.label}
         </Button>
         <Button
           variant="outline"

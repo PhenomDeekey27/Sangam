@@ -59,6 +59,7 @@ export function useRoomSocket({
   onPlayback,
   onPlaybackInterrupt,
   onPlaybackReset,
+  onPlaybackUnavailable,
 }: UseRoomSocketOptions): RoomSocketApi {
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [roomError, setRoomError] = useState<SocketError | null>(null);
@@ -85,6 +86,7 @@ export function useRoomSocket({
   const playbackRef = useRef(onPlayback);
   const playbackInterruptRef = useRef(onPlaybackInterrupt);
   const playbackResetRef = useRef(onPlaybackReset);
+  const playbackUnavailableRef = useRef(onPlaybackUnavailable);
   /**
    * Whether this browser profile was ever seated in this room (this mount or
    * a previous one — session storage survives refresh). Only a previous
@@ -103,6 +105,7 @@ export function useRoomSocket({
     playbackRef.current = onPlayback;
     playbackInterruptRef.current = onPlaybackInterrupt;
     playbackResetRef.current = onPlaybackReset;
+    playbackUnavailableRef.current = onPlaybackUnavailable;
   });
 
   const partnerActivity = useCallback(() => {
@@ -235,6 +238,7 @@ export function useRoomSocket({
       playbackRef,
       playbackInterruptRef,
       playbackResetRef,
+      playbackUnavailableRef,
       selfRef,
       partnerNameRef,
       onInterruptConfirmed: requester.confirm,

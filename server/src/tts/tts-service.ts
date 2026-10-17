@@ -16,16 +16,19 @@
  *   it. If the listener leaves during synthesis, the result is dropped
  *   silently — the translated text row survives either way.
  *
- * Latency: each run is timed, and a bounded content cache (`language` plus
- * synthesized text) reuses audio already produced for an identical phrase.
- * The cache only ever returns the same deterministic bytes a provider call
- * would, so delivery, ordering, and interruption are unchanged; it merely
- * shortens the TTS leg for repeated phrases. The dominant remaining leg is
- * the provider round trip, which this service does not otherwise alter.
+ * Latency: each run is timed, and a bounded content cache (`cacheTag`, target
+ * language, plus synthesized text) reuses audio already produced for an
+ * identical phrase. The tag folds in the engine/model/voice so audio from one
+ * provider is never served as another's. The cache only ever returns the same
+ * deterministic bytes a provider call would, so delivery, ordering, and
+ * interruption are unchanged; it merely shortens the TTS leg for repeated
+ * phrases. The dominant remaining leg is the provider round trip, which this
+ * service does not otherwise alter.
  */
 import type { Server } from "socket.io";
 import type {
   ClientToServerEvents,
+  PlaybackUnavailableReason,
   ServerToClientEvents,
 } from "../sockets/contract.js";
 import type { RoomManager } from "../rooms/room-manager.js";
@@ -95,7 +98,10 @@ export class TtsService {
   /**
    * Speak one completed translation for its listener. Fire-and-forget:
    * resolves nothing and never rejects — a failure simply leaves the row's
-   * translated text without audio.
+   * translated text without audio. When no server audio can be produced (no
+   * provider, unsupported language, every provider failing, or oversized
+   * audio) the listener receives `conversation:playback_unavailable` exactly
+   * once so the client can fall back to its own `speechSynthesis`.
    */
   speakForListener(
     room: Room,
@@ -103,7 +109,6 @@ export class TtsService {
     utteranceId: string,
     translation: CompletedTranslation,
   ): void {
-    if (!this.provider) return;
     const language = normalizeLanguage(translation.targetLanguage ?? "");
     if (!isLanguageCode(language)) {
       logTtsDiagnostic({ utteranceId, language, outcome: "skipped_bad_language" });
@@ -111,6 +116,11 @@ export class TtsService {
     }
     // Dedup before synthesis so even an in-flight run blocks a repeat.
     if (!this.claim(room, utteranceId)) return;
+    if (!this.provider) {
+      logTtsDiagnostic({ utteranceId, language, outcome: "no_provider" });
+      this.notifyUnavailable(room, listener, utteranceId, language, "provider_unavailable");
+      return;
+    }
     void this.run(room, listener, utteranceId, language, translation.text).catch(
       () => {
         // `run` records every failure; this is unreachable backup.
@@ -150,12 +160,22 @@ export class TtsService {
   ): Promise<void> {
     const provider = this.provider;
     if (!provider) return;
-    if (provider.languages.length > 0 && !provider.languages.includes(language)) {
+    // Language routing: a chain exposes `select` (first member accepting the
+    // language); a single provider is asked directly. Either way, no accepting
+    // engine means the listener must fall back to browser speech.
+    const choice = provider.select
+      ? provider.select(language)
+      : provider.languages.length === 0 || provider.languages.includes(language)
+        ? provider
+        : null;
+    if (!choice) {
       logTtsDiagnostic({ utteranceId, language, outcome: "skipped_language" });
+      this.notifyUnavailable(room, listener, utteranceId, language, "unsupported_language");
       return;
     }
+    const cacheTag = provider.cacheTag ?? provider.id;
     const startedAt = Date.now();
-    const cached = this.readCache(language, text);
+    const cached = this.readCache(cacheTag, language, text);
     if (cached) {
       const outcome = this.deliver(
         room,
@@ -174,6 +194,8 @@ export class TtsService {
       return;
     }
     try {
+      // Synthesize through the chain so a preferred provider's failure still
+      // falls back to the next accepting engine within this one attempt.
       const result = await provider.synthesize({ text, language });
       const elapsedMs = Date.now() - startedAt;
       if (result.audio.byteLength > this.maxAudioBytes) {
@@ -183,9 +205,10 @@ export class TtsService {
           outcome: "dropped_oversized",
           elapsedMs,
         });
+        this.notifyUnavailable(room, listener, utteranceId, language, "audio_dropped");
         return;
       }
-      this.writeCache(language, text, result);
+      this.writeCache(cacheTag, language, text, result);
       const outcome = this.deliver(room, listener, utteranceId, language, result);
       logTtsDiagnostic({
         utteranceId,
@@ -201,7 +224,30 @@ export class TtsService {
         outcome: `failed:${failureCode(error)}`,
         elapsedMs: Date.now() - startedAt,
       });
+      this.notifyUnavailable(room, listener, utteranceId, language, "synthesis_failed");
     }
+  }
+
+  /**
+   * Tell the listener that no server audio will arrive for this utterance, so
+   * the client can speak the translated text itself. Emitted only to a live
+   * member of this room, at most once (the caller already claimed the id).
+   */
+  private notifyUnavailable(
+    room: Room,
+    listener: RoomParticipant,
+    utteranceId: string,
+    language: string,
+    reason: PlaybackUnavailableReason,
+  ): void {
+    const membership = this.rooms.membershipOf(listener.socketId);
+    if (!membership || membership.code !== room.code) return;
+    this.io.to(listener.socketId).emit("conversation:playback_unavailable", {
+      utteranceId,
+      sequence: this.sequenceOf(room, utteranceId),
+      language,
+      reason,
+    });
   }
 
   /** Relay the audio to the listener's socket, if they are still seated here. */
@@ -228,10 +274,14 @@ export class TtsService {
     return "delivered";
   }
 
-  /** Cached audio for this exact language+text, refreshing its recency. */
-  private readCache(language: string, text: string): CachedAudio | null {
+  /** Cached audio for this exact engine+language+text, refreshing its recency. */
+  private readCache(
+    cacheTag: string,
+    language: string,
+    text: string,
+  ): CachedAudio | null {
     if (this.cacheBytes === 0) return null;
-    const key = cacheKey(language, text);
+    const key = cacheKey(cacheTag, language, text);
     const hit = this.cache.get(key);
     if (!hit) return null;
     // Re-insert so a hot phrase survives oldest-first eviction.
@@ -243,6 +293,7 @@ export class TtsService {
   /** Store one successful synthesis under the byte budget; over-budget entries
    * that can never fit alone are simply not cached. */
   private writeCache(
+    cacheTag: string,
     language: string,
     text: string,
     result: { readonly audio: Buffer; readonly mimeType: string },
@@ -250,7 +301,7 @@ export class TtsService {
     if (this.cacheBytes === 0) return;
     const bytes = result.audio.byteLength;
     if (bytes > this.cacheBytes) return;
-    const key = cacheKey(language, text);
+    const key = cacheKey(cacheTag, language, text);
     const previous = this.cache.get(key);
     if (previous) {
       this.cachedBytes -= previous.bytes;
@@ -322,7 +373,7 @@ function logTtsDiagnostic(detail: {
   );
 }
 
-/** Cache key: target language plus exact synthesized text. */
-function cacheKey(language: string, text: string): string {
-  return `${language}\u0000${text}`;
+/** Cache key: engine identity plus target language plus exact text. */
+function cacheKey(cacheTag: string, language: string, text: string): string {
+  return `${cacheTag}\u0000${language}\u0000${text}`;
 }

@@ -54,7 +54,7 @@ export class TtsProviderError extends Error {
 }
 
 /** Which vendor id a provider reports. `none` never synthesizes. */
-export type TtsProviderId = "gemini" | "mock" | "none";
+export type TtsProviderId = "sarvam" | "gemini" | "mock" | "none";
 
 /** One text-to-speech engine. */
 export interface TtsProvider {
@@ -64,6 +64,18 @@ export interface TtsProvider {
    * means "auto-detects every language Sangam supports".
    */
   readonly languages: readonly string[];
+  /**
+   * Optional language-aware routing for a chain: returns the member that
+   * would serve this language first, or `null` when no member can. A provider
+   * without `select` is asked directly for every language.
+   */
+  readonly select?: (language: string) => TtsProvider | null;
+  /**
+   * Optional stable identity (engine + model + voice) folded into the
+   * playback cache key, so audio produced by one engine is never served as
+   * another engine's output.
+   */
+  readonly cacheTag?: string;
   /**
    * Synthesize one utterance-sized translation. Resolves with a complete
    * audio container or rejects with `TtsProviderError` — never both-neither.

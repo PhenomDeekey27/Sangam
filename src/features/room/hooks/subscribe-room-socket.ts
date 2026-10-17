@@ -24,11 +24,14 @@ import {
   markUtteranceReceived,
 } from "@/features/conversation/utils/latency";
 import { parsePlaybackPayload } from "@/features/playback/services/playback-payload";
+import { parsePlaybackUnavailablePayload } from "@/features/playback/services/playback-unavailable-payload";
+import { normalizeAudioBytes } from "@/features/playback/services/audio-bytes";
 import type { TranslationState } from "@/features/translation/types";
 import { readWasMember } from "@/features/room/utils/connection";
 import type { LanguageCode } from "@/types";
 import type {
   PlaybackPayload,
+  PlaybackUnavailablePayload,
   SocketError,
   SpeechCapabilities,
 } from "@/types/socket";
@@ -76,6 +79,13 @@ export interface RoomSubscriptionContext {
   readonly playbackInterruptRef: RefObject<(sequence: number) => void>;
   /** Stage-7 teardown sink: stop and forget all playback (disconnect/leave). */
   readonly playbackResetRef: RefObject<() => void>;
+  /**
+   * Stage-6 browser fallback sink: no server audio is coming for this
+   * utterance, so speak the stored translation locally.
+   */
+  readonly playbackUnavailableRef: RefObject<
+    (payload: PlaybackUnavailablePayload) => void
+  >;
   readonly selfRef: RefObject<SelfIdentity | null>;
   /** Display name of the other seat, for naming who interrupted (or `null`). */
   readonly partnerNameRef: RefObject<string | null>;
@@ -120,6 +130,7 @@ export function subscribeRoomSocket(
     playbackRef,
     playbackInterruptRef,
     playbackResetRef,
+    playbackUnavailableRef,
     selfRef,
     partnerNameRef,
     onInterruptConfirmed,
@@ -275,10 +286,21 @@ export function subscribeRoomSocket(
     const parsed = parsePlaybackPayload(payload);
     if (!parsed) return;
     markLatency(parsed.utteranceId, "audio");
-    const bytes = normalizeAudio(audio, (blobBytes) => {
+    const bytes = normalizeAudioBytes(audio, (blobBytes) => {
       playbackRef.current(parsed, blobBytes);
     });
     if (bytes) playbackRef.current(parsed, bytes);
+  };
+
+  /**
+   * Stage-6 browser fallback. The server tells us no audio is coming; the
+   * translated text is already on the row, so the client speaks it locally
+   * (ordering and interruption are enforced by the fallback service).
+   */
+  const onPlaybackUnavailable = (payload: unknown): void => {
+    const parsed = parsePlaybackUnavailablePayload(payload);
+    if (!parsed) return;
+    playbackUnavailableRef.current(parsed);
   };
 
   const onConnect = () => {
@@ -330,34 +352,6 @@ export function subscribeRoomSocket(
     silenceRef.current();
   };
 
-  /**
-   * Normalize the binary audio argument across transports: WebSocket
-   * delivers `ArrayBuffer`, long-polling may hand a `Blob`, and anything
-   * else is treated as unusable rather than crashing the queue. A Blob
-   * resolves through `onBlob` later; playback ordering is enforced by the
-   * queue's `sequence`, not arrival timing.
-   */
-  function normalizeAudio(
-    value: unknown,
-    onBlob: (bytes: ArrayBuffer) => void,
-  ): ArrayBuffer | null {
-    if (value instanceof ArrayBuffer) return value;
-    if (ArrayBuffer.isView(value)) {
-      return value.buffer.slice(
-        value.byteOffset,
-        value.byteOffset + value.byteLength,
-      ) as ArrayBuffer;
-    }
-    if (typeof Blob !== "undefined" && value instanceof Blob) {
-      void value
-        .arrayBuffer()
-        .then(onBlob)
-        .catch(() => undefined);
-      return null;
-    }
-    return null;
-  }
-
   socket.on("connect", onConnect);
   socket.on("disconnect", onDisconnect);
   socket.on("connect_error", onConnectError);
@@ -375,6 +369,7 @@ export function subscribeRoomSocket(
   socket.on("conversation:interrupt", onInterrupt);
   socket.on("conversation:interrupt_confirmed", handleInterruptConfirmed);
   socket.on("conversation:playback", onPlayback);
+  socket.on("conversation:playback_unavailable", onPlaybackUnavailable);
   socket.on("speech:capabilities", onCapabilities);
   socket.on("error", onErrorEvent);
 

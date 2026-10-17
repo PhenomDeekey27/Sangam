@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
  * server-only secret — translation included: the browser never calls the
  * vendor, the server does.
  */
-const SECRET_NAMES = ["GEMINI_API_KEY", "DEEPGRAM_API_KEY"];
+const SECRET_NAMES = ["GEMINI_API_KEY", "DEEPGRAM_API_KEY", "SARVAM_API_KEY"];
 
 async function sourceFiles(
   directory: string,

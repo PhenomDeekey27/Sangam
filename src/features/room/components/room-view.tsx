@@ -122,7 +122,6 @@ function RoomLive({ code, mode, preferences }: RoomLiveProps) {
     canSendText,
   } = conversation;
 
-  const playing = playback.status === "playing";
   const interruptLabel = interruptButtonLabel(interruptState);
   const interruptPending = isInterruptPending(interruptState);
   const waiting = connection === "connected" && you !== null && !partner;
@@ -309,13 +308,13 @@ function RoomLive({ code, mode, preferences }: RoomLiveProps) {
             capturing={capturing}
             mic={mic}
             recognitionStatus={recognitionStatus}
-            playing={playing}
+            playbackStatus={playback.status}
             canInterrupt={canInterrupt}
             interruptLabel={interruptLabel}
             interruptPending={interruptPending}
             disabled={!canSendText}
             onToggleCapture={conversation.toggleCapture}
-            onStopPlayback={conversation.stopPlayback}
+            onPlaybackAction={conversation.togglePlayback}
             onInterrupt={conversation.interrupt}
           />
           <TextComposer

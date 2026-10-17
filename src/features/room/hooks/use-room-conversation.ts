@@ -27,6 +27,7 @@ import {
 } from "@/features/room/utils/interrupt-state";
 import { useSpeechCapture } from "@/features/speech/hooks/use-speech-capture";
 import { usePlaybackQueue } from "@/features/playback/hooks/use-playback-queue";
+import { useSpeechSynthesisFallback } from "@/features/playback/hooks/use-speech-synthesis-fallback";
 import { recordPlaybackStart } from "@/features/conversation/utils/latency";
 import type {
   MicPermission,
@@ -87,7 +88,12 @@ export interface RoomConversation {
   readonly toggleCapture: () => void;
   readonly sendText: (text: string) => void;
   readonly interrupt: () => void;
-  readonly stopPlayback: () => void;
+  /**
+   * The single playback control's action: stop whatever is audible, and
+   * otherwise resume/prime playback from the user's own click. It is never
+   * inert — an idle, parked, or failed queue still answers it.
+   */
+  readonly togglePlayback: () => void;
   readonly retryConnection: () => void;
 }
 
@@ -125,10 +131,51 @@ export function useRoomConversation({
   // disconnect/leave so the next room starts clean.
   const {
     enqueue: onPlayback,
-    interrupt: onPlaybackInterrupt,
-    reset: onPlaybackReset,
+    interrupt: queueInterrupt,
+    reset: queueReset,
     stop: stopPlayback,
+    unlock: unlockPlayback,
   } = playbackQueue;
+
+  // Browser speech fallback: when the server cannot synthesize (no provider,
+  // an unsupported language, or a provider outage) the translated text is
+  // spoken locally instead of waiting for audio that will never arrive. The
+  // transcript rows are read through a ref, so its ordering watermark survives
+  // every re-render.
+  const entriesRef = useRef<readonly TranscriptEntry[]>([]);
+  const speechFallback = useSpeechSynthesisFallback({
+    getText: (utteranceId) => {
+      const row = entriesRef.current.find(
+        (entry) => entry.utterance.id === utteranceId,
+      );
+      if (!row || row.translation.status !== "complete") return null;
+      return row.translation.text;
+    },
+  });
+  const { speak: speakFallback, interrupt: interruptFallback, reset: resetFallback } =
+    speechFallback;
+  // Interruption and teardown must silence both the server-audio queue and the
+  // local fallback, so no line from the interrupted turn keeps speaking.
+  const onPlaybackInterrupt = useCallback(
+    (sequence: number) => {
+      queueInterrupt(sequence);
+      interruptFallback(sequence);
+    },
+    [queueInterrupt, interruptFallback],
+  );
+  const onPlaybackReset = useCallback(() => {
+    queueReset();
+    resetFallback();
+  }, [queueReset, resetFallback]);
+
+  // One control, two jobs. Stopping is only meaningful while something is
+  // audible; every other status — idle and empty, parked by the autoplay
+  // policy, or latched after a failed item — resolves to unlocking, which is
+  // also the click a browser needs before it will start audio at all.
+  const togglePlayback = useCallback(() => {
+    if (playbackQueue.state.status === "playing") stopPlayback();
+    else unlockPlayback();
+  }, [playbackQueue.state.status, stopPlayback, unlockPlayback]);
 
   const {
     connection,
@@ -153,7 +200,15 @@ export function useRoomConversation({
     onPlayback,
     onPlaybackInterrupt,
     onPlaybackReset,
+    onPlaybackUnavailable: speakFallback,
   });
+
+  // The fallback reads the latest transcript rows (a completed translation may
+  // arrive after the "unavailable" frame, in which case its text is read then).
+  // Mirrored in an effect, never during render.
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   // Translated-speech playback (Stage 6) is wired above the socket hook.
 
@@ -271,7 +326,7 @@ export function useRoomConversation({
     toggleCapture,
     sendText,
     interrupt,
-    stopPlayback,
+    togglePlayback,
     retryConnection,
   };
 }

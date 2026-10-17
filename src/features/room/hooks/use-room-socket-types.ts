@@ -13,6 +13,7 @@ import type { InterruptState } from "@/features/room/utils/interrupt-state";
 import type { LanguageCode } from "@/types";
 import type {
   PlaybackPayload,
+  PlaybackUnavailablePayload,
   SocketError,
 } from "@/types/socket";
 
@@ -42,6 +43,11 @@ export interface UseRoomSocketOptions {
   readonly onPlaybackInterrupt: (sequence: number) => void;
   /** Stop and forget all playback on disconnect, leave, or room change. */
   readonly onPlaybackReset: () => void;
+  /**
+   * No server audio will arrive for one utterance. The client speaks the
+   * translated text locally (its own `speechSynthesis`) instead of waiting.
+   */
+  readonly onPlaybackUnavailable: (payload: PlaybackUnavailablePayload) => void;
 }
 
 /** Socket lifecycle, membership, transcript relay, and interim lines. */

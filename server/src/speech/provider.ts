@@ -18,12 +18,25 @@ export interface SpeechProviderError {
   readonly retryable: boolean;
 }
 
+/**
+ * Optional metadata a provider may attach to a finalized segment. Only the
+ * fields the provider actually reports are populated; a provider that cannot
+ * detect language (for example a streaming vendor pinned to one locale)
+ * simply omits this second argument.
+ */
+export interface SpeechFinalMetadata {
+  /** BCP-47 primary subtag the provider detected, or `null` when unknown. */
+  readonly detectedLanguage: string | null;
+  /** 0..1 confidence in the detected language, or `null` when unreported. */
+  readonly confidence: number | null;
+}
+
 /** Callbacks a provider session pushes results through. */
 export interface SpeechProviderListeners {
   /** Replaceable partial transcript; called many times per utterance. */
   readonly onInterim: (text: string) => void;
-  /** One finalized transcript segment. */
-  readonly onFinal: (text: string) => void;
+  /** One finalized transcript segment, with optional detection metadata. */
+  readonly onFinal: (text: string, metadata?: SpeechFinalMetadata) => void;
   readonly onError: (error: SpeechProviderError) => void;
   /** The upstream connection closed (gracefully or not). */
   readonly onClose: () => void;
@@ -33,6 +46,12 @@ export interface SpeechProviderListeners {
 export interface SpeechProviderOpenOptions extends SpeechProviderListeners {
   /** BCP-47 primary subtag the speaker selected, e.g. `"ta"`. */
   readonly language: string;
+  /**
+   * Container/codec of the captured chunks (`audio/webm`, `audio/ogg`, …),
+   * already validated by the caller. Providers that batch the turn upstream
+   * need it to label the upload; streaming providers may ignore it.
+   */
+  readonly mimeType?: string;
 }
 
 /** A live recognition session. */
@@ -48,7 +67,12 @@ export interface SpeechProviderSession {
 /** One speech-to-text engine. */
 export interface SpeechProvider {
   readonly id: SpeechProviderId;
-  /** True when live audio can be streamed (vs. whole-file batches). */
+  /**
+   * True when a session consumes a live audio stream (chunks pushed as they
+   * are captured). A provider may buffer that stream internally and batch it
+   * upstream — `interim` reports whether replaceable partial text is produced
+   * while the stream is open.
+   */
   readonly streaming: boolean;
   /** True when replaceable interim text is produced. */
   readonly interim: boolean;

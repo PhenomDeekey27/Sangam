@@ -1,4 +1,8 @@
 import type { PlaybackItem } from "./playback-queue";
+import {
+  describePlaybackError,
+  logPlaybackDiagnostic,
+} from "@/features/playback/utils/playback-diagnostics";
 
 /**
  * The browser side of Stage-6 playback: turn one binary audio frame into a
@@ -139,9 +143,38 @@ export class AudioPlayer {
           }
         })
         .catch((error: unknown) => {
-          if (this.stopped) finish("stopped");
-          else if (isAutoplayRefusal(error)) finish("blocked");
-          else finish("played", error);
+          const failure = describePlaybackError(error);
+          if (this.stopped) {
+            finish("stopped");
+          } else if (isAutoplayRefusal(error)) {
+            logPlaybackDiagnostic({
+              stage: "outcome",
+              utteranceId: item.utteranceId,
+              sequence: item.sequence,
+              bytes: item.audio.byteLength,
+              mimeType: item.mimeType,
+              status: "blocked",
+              reason: "autoplay_refusal",
+              errorName: failure.name,
+              errorMessage: failure.message,
+            });
+            finish("blocked");
+          } else {
+            // The real element rejection, logged before it is rethrown so a
+            // "no audio, no error" symptom can never hide its cause.
+            logPlaybackDiagnostic({
+              stage: "failure",
+              utteranceId: item.utteranceId,
+              sequence: item.sequence,
+              bytes: item.audio.byteLength,
+              mimeType: item.mimeType,
+              status: "error",
+              reason: "element_play_rejected",
+              errorName: failure.name,
+              errorMessage: failure.message,
+            });
+            finish("played", error);
+          }
         });
     });
   }

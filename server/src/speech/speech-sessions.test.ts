@@ -7,6 +7,7 @@ import { SpeechSessions } from "./speech-sessions.js";
 import { MockTranslator } from "../translation/mock-translator.js";
 import { TranslationService } from "../translation/translation-service.js";
 import type {
+  SpeechFinalMetadata,
   SpeechProvider,
   SpeechProviderError,
   SpeechProviderOpenOptions,
@@ -22,7 +23,7 @@ type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 
 interface ScriptedSession extends SpeechProviderSession {
   readonly emitInterim: (text: string) => void;
-  readonly emitFinal: (text: string) => void;
+  readonly emitFinal: (text: string, metadata?: SpeechFinalMetadata) => void;
   readonly emitError: (error: SpeechProviderError) => void;
   readonly isClosed: () => boolean;
 }
@@ -46,8 +47,8 @@ function scriptedProvider() {
         emitInterim: (text) => {
           if (!closed) options.onInterim(text);
         },
-        emitFinal: (text) => {
-          if (!closed) options.onFinal(text);
+        emitFinal: (text, metadata) => {
+          if (!closed) options.onFinal(text, metadata);
         },
         emitError: (error) => {
           if (!closed) options.onError(error);
@@ -190,6 +191,35 @@ describe("SpeechSessions transcripts", () => {
     assert.equal(payload.entry.utterance.text, "Vanakkam");
     assert.equal(payload.entry.utterance.language, "ta");
     assert.equal(payload.entry.utterance.sequence, 1);
+  });
+
+  it("replaces the seat language with a supported detected language", () => {
+    const h = harness();
+    h.sessions.start(h.socket, { language: "ta" });
+    h.scripted.sessions[0]?.emitFinal("नमस्ते", {
+      detectedLanguage: "hi",
+      confidence: 0.91,
+    });
+    const payload = h.roomEmitted.find(
+      (e) => e.event === "conversation:utterance",
+    )?.payload as { entry: { utterance: { language: string } } };
+    assert.equal(payload.entry.utterance.language, "hi");
+  });
+
+  it("keeps the seat language for unknown or unsupported detection", () => {
+    const h = harness();
+    h.sessions.start(h.socket, { language: "ta" });
+    const session = h.scripted.sessions[0];
+    session?.emitFinal("a", { detectedLanguage: "xx", confidence: null });
+    session?.emitFinal("b", { detectedLanguage: null, confidence: null });
+    const languages = h.roomEmitted
+      .filter((e) => e.event === "conversation:utterance")
+      .map(
+        (e) =>
+          (e.payload as { entry: { utterance: { language: string } } }).entry
+            .utterance.language,
+      );
+    assert.deepEqual(languages, ["ta", "ta"]);
   });
 
   it("clears the speaker's interim line when a final lands", () => {

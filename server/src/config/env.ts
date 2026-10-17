@@ -22,17 +22,26 @@ export interface ServerEnv {
 
 /**
  * How the server chooses a speech-to-text engine:
- * - `auto`     — use the real provider when its key is present, else none.
- * - `deepgram` — require the real provider (a missing key is a startup error).
+ * - `auto`     — Sarvam when its key is present, else Deepgram when its key
+ *                is, else none. The chain is built from whatever exists.
+ * - `sarvam`   — require Sarvam (a missing key is a startup error).
+ * - `deepgram` — require Deepgram (a missing key is a startup error).
  * - `mock`     — deterministic double for development and tests only.
  * - `none`     — never run server recognition (clients fall back to the
  *                browser or the text composer).
  */
-export type SpeechProviderMode = "auto" | "deepgram" | "mock" | "none";
+export type SpeechProviderMode =
+  | "auto"
+  | "sarvam"
+  | "deepgram"
+  | "mock"
+  | "none";
 
 /** Raw (possibly partial) speech configuration as supplied by tests or env. */
 export interface SpeechEnvInput {
   readonly provider?: string;
+  readonly sarvamApiKey?: string | null;
+  readonly sarvamModel?: string;
   readonly deepgramApiKey?: string | null;
   readonly deepgramModel?: string;
   readonly maxSessionBytes?: number;
@@ -43,6 +52,9 @@ export interface SpeechEnvInput {
 export interface SpeechEnv {
   readonly mode: SpeechProviderMode;
   readonly provider: SpeechProviderId;
+  /** Sarvam credential; server-only and never logged. */
+  readonly sarvamApiKey: string | null;
+  readonly sarvamModel: string;
   readonly deepgramApiKey: string | null;
   readonly deepgramModel: string;
   readonly maxSessionBytes: number;
@@ -51,39 +63,52 @@ export interface SpeechEnv {
 
 /**
  * How the server chooses a machine-translation vendor:
- * - `auto`   — Google primary, plus Gemini fallback when its key is present.
- * - `google` — Google primary only; Gemini fallback explicitly disabled.
- * - `gemini` — Google primary, Gemini fallback required (a missing key is a
- *                startup error, as before).
+ * - `auto`   — Sarvam primary when its key is present, else Google primary;
+ *               Gemini fallback when its key is present.
+ * - `sarvam` — Sarvam required (a missing key is a startup error).
+ * - `google` — Sarvam disabled; Google primary only, Gemini fallback off.
+ * - `gemini` — Sarvam disabled; Google primary, Gemini fallback required.
  * - `none`   — never translate (utterances stay `unavailable`).
  */
-export type TranslationProviderMode = "auto" | "google" | "gemini" | "none";
+export type TranslationProviderMode =
+  | "auto"
+  | "sarvam"
+  | "google"
+  | "gemini"
+  | "none";
 
 /** Raw (possibly partial) translation configuration. */
 export interface TranslationEnvInput {
   readonly provider?: string | null;
   readonly apiKey?: string | null;
   readonly model?: string | null;
+  readonly sarvamApiKey?: string | null;
+  readonly sarvamModel?: string | null;
 }
 
-/** Validated translation configuration. The key stays server-side. */
+/** Validated translation configuration. Every key stays server-side. */
 export interface TranslationEnv {
   readonly mode: TranslationProviderMode;
   /** Effective primary vendor, or `null` when translation is unavailable. */
-  readonly primary: "google" | null;
+  readonly primary: "sarvam" | "google" | null;
   /** Effective fallback vendor, or `null` when fallback is disabled. */
   readonly fallback: "gemini" | null;
+  /** Gemini credential (translation fallback). */
   readonly apiKey: string | null;
   readonly model: string;
+  /** Sarvam credential and model for the preferred primary. */
+  readonly sarvamApiKey: string | null;
+  readonly sarvamModel: string;
 }
 
 /**
  * How the server chooses a text-to-speech vendor (Stage 6 playback):
- * - `auto`  — Gemini TTS when a Gemini key is present, else none.
- * - `gemini` — require Gemini TTS (a missing key is a startup error).
+ * - `auto`  — Sarvam Bulbul when its key is present, else Gemini TTS; chained.
+ * - `sarvam` — require Sarvam Bulbul (a missing key is a startup error).
+ * - `gemini` — Sarvam disabled; require Gemini TTS.
  * - `none`  — never synthesize (listeners only ever read the transcript).
  */
-export type TtsProviderMode = "auto" | "gemini" | "none";
+export type TtsProviderMode = "auto" | "sarvam" | "gemini" | "none";
 
 /** Raw (possibly partial) text-to-speech configuration. */
 export interface TtsEnvInput {
@@ -91,19 +116,34 @@ export interface TtsEnvInput {
   readonly apiKey?: string | null;
   readonly model?: string | null;
   readonly voice?: string | null;
+  readonly sarvamApiKey?: string | null;
+  readonly sarvamModel?: string | null;
+  readonly sarvamVoice?: string | null;
 }
 
-/** Validated text-to-speech configuration. The key stays server-side. */
+/** Validated text-to-speech configuration. Every key stays server-side. */
 export interface TtsEnv {
   readonly mode: TtsProviderMode;
-  /** Effective vendor, or `null` when playback is unavailable. */
-  readonly provider: "gemini" | null;
+  /** Preferred vendor, or `null` when playback is unavailable. */
+  readonly provider: "sarvam" | "gemini" | null;
+  /** True when Gemini TTS is configured behind Sarvam. */
+  readonly geminiEnabled: boolean;
+  /** Gemini credential/model/voice. */
   readonly apiKey: string | null;
   readonly model: string;
   readonly voice: string;
+  /** Sarvam credential plus optional documented model/voice overrides. */
+  readonly sarvamApiKey: string | null;
+  readonly sarvamModel: string | null;
+  readonly sarvamVoice: string | null;
 }
 
-const TTS_MODES: readonly TtsProviderMode[] = ["auto", "gemini", "none"];
+const TTS_MODES: readonly TtsProviderMode[] = [
+  "auto",
+  "sarvam",
+  "gemini",
+  "none",
+];
 
 const DEFAULT_TTS_MODEL = "gemini-3.8-flash-lite-tts";
 const DEFAULT_TTS_VOICE = "Kore";
@@ -116,30 +156,58 @@ export function resolveTtsEnv(input: TtsEnvInput = {}): TtsEnv {
   )
     ? (requested as TtsProviderMode)
     : "auto";
-  const key = input.apiKey?.trim();
-  const apiKey = key && key.length > 0 ? key : null;
-  if (mode === "gemini" && !apiKey) {
+  const geminiKey = clean(input.apiKey);
+  const sarvamKey = clean(input.sarvamApiKey);
+  if (mode === "gemini" && !geminiKey) {
     throw new Error(
       "TTS_PROVIDER=gemini requires GEMINI_API_KEY (or TTS_API_KEY) to be set in server/.env (see .env.example)",
     );
   }
+  if (mode === "sarvam" && !sarvamKey) {
+    throw new Error(
+      "TTS_PROVIDER=sarvam requires SARVAM_API_KEY to be set in server/.env (see .env.example)",
+    );
+  }
+  const sarvamEnabled = mode !== "none" && mode !== "gemini" && sarvamKey !== null;
+  const geminiEnabled =
+    mode === "gemini" ||
+    ((mode === "auto" || mode === "sarvam") && geminiKey !== null);
   return {
     mode,
-    provider: mode === "none" || !apiKey ? null : "gemini",
-    apiKey,
+    provider:
+      mode === "none"
+        ? null
+        : sarvamEnabled
+          ? "sarvam"
+          : geminiEnabled && geminiKey
+            ? "gemini"
+            : null,
+    geminiEnabled: mode === "none" ? false : geminiEnabled && geminiKey !== null,
+    apiKey: geminiKey,
     model: input.model?.trim() || DEFAULT_TTS_MODEL,
     voice: input.voice?.trim() || DEFAULT_TTS_VOICE,
+    sarvamApiKey: sarvamKey,
+    sarvamModel: clean(input.sarvamModel),
+    sarvamVoice: clean(input.sarvamVoice),
   };
+}
+
+/** Trimmed non-empty string, or `null`. */
+function clean(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
 const TRANSLATION_MODES: readonly TranslationProviderMode[] = [
   "auto",
+  "sarvam",
   "google",
   "gemini",
   "none",
 ];
 
 const DEFAULT_TRANSLATION_MODEL = "gemini-3.5-flash-lite";
+const DEFAULT_SARVAM_TRANSLATION_MODEL = "mayura:v1";
 
 /** Resolve partial translation configuration into an explicit shape. */
 export function resolveTranslationEnv(
@@ -151,20 +219,36 @@ export function resolveTranslationEnv(
   ).includes(requested)
     ? (requested as TranslationProviderMode)
     : "auto";
-  const key = input.apiKey?.trim();
-  const apiKey = key && key.length > 0 ? key : null;
+  const apiKey = clean(input.apiKey);
+  const sarvamApiKey = clean(input.sarvamApiKey);
   if (mode === "gemini" && !apiKey) {
     throw new Error(
       "TRANSLATION_PROVIDER=gemini requires GEMINI_API_KEY to be set in server/.env (see .env.example)",
     );
   }
+  if (mode === "sarvam" && !sarvamApiKey) {
+    throw new Error(
+      "TRANSLATION_PROVIDER=sarvam requires SARVAM_API_KEY to be set in server/.env (see .env.example)",
+    );
+  }
+  const sarvamPrimary =
+    mode !== "none" &&
+    mode !== "google" &&
+    mode !== "gemini" &&
+    sarvamApiKey !== null;
   return {
     mode,
-    primary: mode === "none" ? null : "google",
+    primary:
+      mode === "none" ? null : sarvamPrimary ? "sarvam" : "google",
     fallback:
-      (mode === "gemini" || mode === "auto") && apiKey ? "gemini" : null,
+      (mode === "gemini" || mode === "auto" || mode === "sarvam") && apiKey
+        ? "gemini"
+        : null,
     apiKey,
     model: input.model?.trim() || DEFAULT_TRANSLATION_MODEL,
+    sarvamApiKey,
+    sarvamModel:
+      input.sarvamModel?.trim() || DEFAULT_SARVAM_TRANSLATION_MODEL,
   };
 }
 
@@ -172,8 +256,10 @@ const DEV_DEFAULT_ORIGIN = "http://localhost:3000";
 const PORT_FALLBACK = 4000;
 const DEFAULT_MAX_SESSION_BYTES = 12_000_000;
 const DEFAULT_DEEPGRAM_MODEL = "nova-3";
+const DEFAULT_SARVAM_STT_MODEL = "saaras:v4";
 const PROVIDER_MODES: readonly SpeechProviderMode[] = [
   "auto",
+  "sarvam",
   "deepgram",
   "mock",
   "none",
@@ -187,8 +273,13 @@ export function resolveSpeechEnv(input: SpeechEnvInput = {}): SpeechEnv {
   ).includes(requested)
     ? (requested as SpeechProviderMode)
     : "auto";
-  const key = input.deepgramApiKey?.trim();
-  const deepgramApiKey = key && key.length > 0 ? key : null;
+  const sarvamApiKey = clean(input.sarvamApiKey);
+  const deepgramApiKey = clean(input.deepgramApiKey);
+  if (mode === "sarvam" && !sarvamApiKey) {
+    throw new Error(
+      "SPEECH_PROVIDER=sarvam requires SARVAM_API_KEY to be set in server/.env (see .env.example)",
+    );
+  }
   if (mode === "deepgram" && !deepgramApiKey) {
     throw new Error(
       "SPEECH_PROVIDER=deepgram requires DEEPGRAM_API_KEY to be set in server/.env (see .env.example)",
@@ -201,13 +292,19 @@ export function resolveSpeechEnv(input: SpeechEnvInput = {}): SpeechEnv {
         ? "none"
         : mode === "deepgram"
           ? "deepgram"
-          : deepgramApiKey
-            ? "deepgram"
-            : "none";
+          : mode === "sarvam"
+            ? "sarvam"
+            : sarvamApiKey
+              ? "sarvam"
+              : deepgramApiKey
+                ? "deepgram"
+                : "none";
   const maxBytes = input.maxSessionBytes;
   return {
     mode,
     provider,
+    sarvamApiKey,
+    sarvamModel: input.sarvamModel?.trim() || DEFAULT_SARVAM_STT_MODEL,
     deepgramApiKey,
     deepgramModel: input.deepgramModel?.trim() || DEFAULT_DEEPGRAM_MODEL,
     maxSessionBytes:
@@ -271,6 +368,8 @@ export function loadEnv(raw: NodeJS.ProcessEnv = process.env): ServerEnv {
     isProduction,
     speech: resolveSpeechEnv({
       provider: raw.SPEECH_PROVIDER,
+      sarvamApiKey: raw.SARVAM_API_KEY ?? null,
+      sarvamModel: raw.SARVAM_STT_MODEL,
       deepgramApiKey: raw.DEEPGRAM_API_KEY ?? null,
       deepgramModel: raw.DEEPGRAM_MODEL,
       maxSessionBytes: raw.SPEECH_MAX_SESSION_BYTES
@@ -282,6 +381,8 @@ export function loadEnv(raw: NodeJS.ProcessEnv = process.env): ServerEnv {
       provider: raw.TRANSLATION_PROVIDER,
       apiKey: raw.GEMINI_API_KEY ?? null,
       model: raw.GEMINI_TRANSLATION_MODEL ?? null,
+      sarvamApiKey: raw.SARVAM_API_KEY ?? null,
+      sarvamModel: raw.SARVAM_TRANSLATION_MODEL ?? null,
     }),
     tts: resolveTtsEnv({
       provider: raw.TTS_PROVIDER,
@@ -290,6 +391,10 @@ export function loadEnv(raw: NodeJS.ProcessEnv = process.env): ServerEnv {
       apiKey: raw.TTS_API_KEY ?? raw.GEMINI_API_KEY ?? null,
       model: raw.TTS_MODEL,
       voice: raw.TTS_VOICE,
+      // Sarvam playback shares the one server-side Sarvam credential.
+      sarvamApiKey: raw.SARVAM_API_KEY ?? null,
+      sarvamModel: raw.SARVAM_TTS_MODEL ?? null,
+      sarvamVoice: raw.SARVAM_TTS_VOICE ?? null,
     }),
   };
 }

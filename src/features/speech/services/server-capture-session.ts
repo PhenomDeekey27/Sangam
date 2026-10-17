@@ -52,6 +52,8 @@ function isKnownCode(code: string): boolean {
     "provider_unavailable",
     "provider_auth",
     "provider_network",
+    "provider_quota",
+    "provider_response",
     "audio_too_large",
     "speech_unavailable",
     "language_mismatch",

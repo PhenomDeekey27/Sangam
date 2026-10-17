@@ -16,7 +16,7 @@ import { RoomManager } from "./rooms/room-manager.js";
 import { lookupRoomForJoin } from "./rooms/room-lookup.js";
 import { SpeechSessions } from "./speech/speech-sessions.js";
 import { createTranslator } from "./translation/translation-factory.js";
-import type { ChainAttemptInfo, ChainFinalInfo } from "./translation/translation-chain.js";
+import type { ChainAttemptInfo, ChainFinalInfo, ChainProviderId } from "./translation/translation-chain.js";
 import type { GoogleProviderEvent } from "./translation/google-translate-provider.js";
 import { TranslationService } from "./translation/translation-service.js";
 import type { Translator } from "./translation/translator.js";
@@ -195,15 +195,16 @@ function logChainAttempt(info: ChainAttemptInfo): void {
   );
 }
 
-/** Development-only: the Gemini fallback is about to run. */
-function logFallbackStart(): void {
+/** Development-only: a chain member failed and the next provider is running. */
+function logFallbackStart(next: ChainProviderId): void {
   if (process.env.NODE_ENV === "production") return;
-  console.debug("[sangam] gemini fallback started");
+  console.debug(`[sangam] translation fallback started -> ${next}`);
 }
 
 /**
  * Development-only: which provider supplied the final translation —
- * `google`, `gemini`, or `none` (the original transcript stays visible).
+ * `sarvam`, `google`, `gemini`, or `none` (the original transcript stays
+ * visible).
  */
 function logChainFinal(info: ChainFinalInfo): void {
   if (process.env.NODE_ENV === "production") return;

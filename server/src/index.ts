@@ -1,5 +1,6 @@
 import { createSangamServer } from "./app.js";
 import { loadEnv } from "./config/env.js";
+import { SARVAM_DEFAULT_TTS_MODEL } from "./tts/sarvam-provider.js";
 
 /**
  * Process entry point. Validates configuration first so a misconfigured
@@ -21,7 +22,9 @@ async function main(): Promise<void> {
   // fall back to browser recognition or typed messages.
   const speech = server.speechEnv;
   console.log(
-    `[sangam] speech provider: ${speech.provider} (key configured: ${speech.deepgramApiKey ? "yes" : "no"}; model: ${speech.deepgramModel})`,
+    `[sangam] speech provider: ${speech.provider} ` +
+      `(sarvam key configured: ${speech.sarvamApiKey ? "yes" : "no"}; model: ${speech.sarvamModel}` +
+      ` | deepgram key configured: ${speech.deepgramApiKey ? "yes" : "no"}; model: ${speech.deepgramModel})`,
   );
   if (speech.provider === "none") {
     console.log(
@@ -32,7 +35,8 @@ async function main(): Promise<void> {
   console.log(
     `[sangam] translation primary: ${translation.primary ?? "none"}` +
       `; fallback: ${translation.fallback ?? "none"}` +
-      ` (model: ${translation.model}; key configured: ${translation.apiKey ? "yes" : "no"})`,
+      ` (sarvam key configured: ${translation.sarvamApiKey ? "yes" : "no"}; model: ${translation.sarvamModel}` +
+      ` | gemini key configured: ${translation.apiKey ? "yes" : "no"}; model: ${translation.model})`,
   );
   if (!translation.primary) {
     console.log(
@@ -41,7 +45,9 @@ async function main(): Promise<void> {
   }
   const tts = server.ttsEnv;
   console.log(
-    `[sangam] playback provider: ${tts.provider ?? "none"} (key configured: ${tts.apiKey ? "yes" : "no"}; model: ${tts.model}; voice: ${tts.voice})`,
+    `[sangam] playback provider: ${tts.provider ?? "none"}` +
+      ` (sarvam key configured: ${tts.sarvamApiKey ? "yes" : "no"}; model: ${tts.sarvamModel ?? SARVAM_DEFAULT_TTS_MODEL}` +
+      ` | gemini key configured: ${tts.apiKey ? "yes" : "no"}; model: ${tts.model}; voice: ${tts.voice})`,
   );
   if (!tts.provider) {
     console.log(
